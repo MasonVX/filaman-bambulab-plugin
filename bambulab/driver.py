@@ -139,7 +139,7 @@ class Driver(BaseDriver):
     def _process_slots(self, payload: dict) -> None:
         """AMS/Tray-Daten aus push_status extrahieren und slots_update emittieren."""
         ams_data = payload.get("print", {}).get("ams", {}).get("ams", [])
-        vt_tray = payload.get("print", {}).get("vt_tray", {})
+        vt_tray = payload.get("print", {}).get("vt_tray")  # None = nicht vorhanden
 
         slots: list[dict[str, Any]] = []
 
@@ -193,8 +193,10 @@ class Driver(BaseDriver):
                 elif self._pending and self._pending.slot_index == slot_index:
                     pass
 
-        # Externe Spule (vt_tray)
-        if vt_tray.get("tray_type"):
+        # Externe Spule (vt_tray) — immer auswerten wenn vorhanden
+        has_external = vt_tray is not None
+        if has_external:
+            ext_has_filament = bool(vt_tray.get("tray_type"))
             slots.append({
                 "slot_index": "255-254",
                 "slot_name": "External Tray",
@@ -203,35 +205,35 @@ class Driver(BaseDriver):
                 "tray_color": vt_tray.get("tray_color", ""),
                 "nozzle_temp_min": vt_tray.get("nozzle_temp_min"),
                 "nozzle_temp_max": vt_tray.get("nozzle_temp_max"),
-                "present": True,
+                "present": ext_has_filament,
             })
 
-            if self._pending and self._pending.slot_index == "255-254":
+            if ext_has_filament and self._pending and self._pending.slot_index == "255-254":
                 logger.info("Pending match: external tray has spool")
                 self._send_filament_setting(255, 254, self._pending.filament_data)
                 if self._pending.timer and self._loop:
                     self._loop.call_soon_threadsafe(self._pending.timer.cancel)
                 self._pending = None
 
+        # AMS/Slot Zusammenfassung
+        total_slots = sum(u.get("tray_count", 0) for u in ams_units)
+        if has_external:
+            total_slots += 1
+        ams_info = {
+            "ams_count": len(ams_units),
+            "ams_type": "AMS Lite" if self._is_ams_lite else "AMS",
+            "slot_count": total_slots,
+            "external_spool": has_external,
+            "ams_units": ams_units,
+        }
+
         # Event an System melden (muss im asyncio-Thread passieren)
-        if slots:
-            self._current_slots = slots
-            if self._loop:
-                ext_exists = any(s.get("slot_index") == "255-254" for s in slots)
-                total_slots = sum(u.get("tray_count", 0) for u in ams_units)
-                if ext_exists:
-                    total_slots += 1
-                ams_info = {
-                    "ams_count": len(ams_units),
-                    "ams_type": "AMS Lite" if self._is_ams_lite else "AMS",
-                    "slot_count": total_slots,
-                    "external_spool": ext_exists,
-                    "ams_units": ams_units,
-                }
-                self._loop.call_soon_threadsafe(
-                    self.emit,
-                    {"event_type": "slots_update", "slots": slots, "ams_info": ams_info},
-                )
+        self._current_slots = slots
+        if self._loop:
+            self._loop.call_soon_threadsafe(
+                self.emit,
+                {"event_type": "slots_update", "slots": slots, "ams_info": ams_info},
+            )
 
     # -- Filament-Setting senden ----------------------------------------------
 
