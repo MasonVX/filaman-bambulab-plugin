@@ -1,0 +1,46 @@
+{
+  "plugin_key": "bambulab",
+  "name": "Bambu Lab",
+  "driver_key": "bambulab",
+  "plugin_type": "driver",
+  "version": "1.0.0",
+  "description": "Bambu Lab printer driver via MQTT. Supports AMS, RFID and automatic filament matching.",
+  "author": "FilaMan",
+  "homepage": "https://filaman.dev",
+  "dependencies": ["aiomqtt>=2.0.0"],
+  "config_schema": {
+    "type": "object",
+    "properties": {
+      "host": {
+        "type": "string",
+        "title": "IP/Hostname",
+        "description": "IP address or hostname of the Bambu printer"
+      },
+      "serial": {
+        "type": "string",
+        "title": "Serial Number",
+        "description": "Printer serial number"
+      },
+      "access_code": {
+        "type": "string",
+        "title": "Access Code",
+        "description": "Printer access code"
+      },
+      "timeout_seconds": {
+        "type": "integer",
+        "title": "Timeout (automatische Spulenzuordnung)",
+        "description": "Time to wait for printer confirmation after assigning a spool",
+        "default": 60,
+        "minimum": 10,
+        "maximum": 300
+      }
+    },
+    "required": ["host", "serial", "access_code"]
+  },
+  "capabilities": {
+    "has_slots": true,
+    "has_rfid": true,
+    "has_ams": true,
+    "supports_auto_match": true
+  }
+}
