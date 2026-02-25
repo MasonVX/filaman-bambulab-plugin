@@ -23,10 +23,14 @@ while IFS= read -r pjson; do
   echo "📦 $FOLDER_NAME v${VERSION}"
 done < <(find "$SCRIPT_DIR" -maxdepth 2 -name "plugin.json" -not -path "*/.git/*")
 
-# ─── 3. Code auf Gitea pushen ────────────────────────────────────
+# ─── 3. Code pushen (Gitea + GitHub) ─────────────────────────────
 echo ""
-echo "📤 Push auf $REMOTE $BRANCH ..."
-git push "$REMOTE" "$BRANCH"
-echo "✅ Push erfolgreich."
+for REMOTE_NAME in origin github; do
+  if git remote get-url "$REMOTE_NAME" > /dev/null 2>&1; then
+    echo "📤 Push auf $REMOTE_NAME $BRANCH ..."
+    git push "$REMOTE_NAME" "$BRANCH"
+    echo "✅ $REMOTE_NAME push erfolgreich."
+  fi
+done
 echo ""
-echo "🎉 Fertig! Gitea Workflow übernimmt ZIP-Erstellung und Package-Upload."
+echo "🎉 Fertig! Workflows übernehmen ZIP-Erstellung und Package-Upload."
