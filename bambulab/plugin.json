@@ -3,11 +3,11 @@
   "name": "Bambu Lab",
   "driver_key": "bambulab",
   "plugin_type": "driver",
-  "version": "1.0.3",
-  "description": "Bambu Lab printer driver via MQTT. Supports AMS, RFID and automatic filament matching.",
+  "version": "2.0.2",
+  "description": "Bambu Lab printer driver via bambulabs_api. Supports AMS, RFID and automatic filament matching.",
   "author": "FilaMan",
   "homepage": "https://filaman.dev",
-  "dependencies": ["aiomqtt>=2.0.0"],
+  "dependencies": ["bambulabs_api>=2.6.0"],
   "config_schema": {
     "type": "object",
     "properties": {
@@ -15,8 +15,8 @@
         "type": "string",
         "title": "Printer Model",
         "description": "Select your Bambu Lab printer model. Determines AMS data structure handling.",
-        "enum": ["X1", "X1C", "X1E", "P1P", "P1S", "A1", "A1_MINI"],
-        "enumNames": ["X1", "X1 Carbon", "X1E", "P1P", "P1S", "A1", "A1 Mini"],
+        "enum": ["P1S", "P1P", "X1C", "X1E", "A1", "A1_MINI"],
+        "enumNames": ["P1S", "P1P", "X1 Carbon", "X1E", "A1", "A1 Mini"],
         "default": "P1S"
       },
       "host": {

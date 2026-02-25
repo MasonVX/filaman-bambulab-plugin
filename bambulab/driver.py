@@ -1,7 +1,7 @@
 import asyncio
 import json
 import logging
-import ssl
+import threading
 from datetime import datetime
 from typing import Any, Callable
 
@@ -9,7 +9,6 @@ from app.plugins.base import BaseDriver
 
 logger = logging.getLogger(__name__)
 
-BAMBU_USERNAME = "bblp"
 DEFAULT_TIMEOUT = 60
 DEFAULT_RECONNECT_INTERVAL = 5
 
@@ -33,8 +32,7 @@ class Driver(BaseDriver):
         emitter: Callable[[dict[str, Any]], None],
     ):
         super().__init__(printer_id, config, emitter)
-        self._task: asyncio.Task | None = None
-        self._mqtt_client = None
+        self._printer: Any = None  # bambulabs_api.Printer
         self._pending: PendingSpool | None = None
         self._timeout_seconds = config.get("timeout_seconds", DEFAULT_TIMEOUT)
         self._host = config.get("host", "")
@@ -46,121 +44,129 @@ class Driver(BaseDriver):
         self._current_ams_units: list[dict[str, Any]] = []
         self._printer_model = config.get("printer_model", "P1S")
         self._is_ams_lite = self._printer_model in ("A1", "A1_MINI")
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._ams_serials: dict[str, str] = {}  # ams_id -> serial number
 
     async def start(self) -> None:
+        from bambulabs_api import Printer
+
         self._running = True
-        self._task = asyncio.create_task(self._run())
+        self._loop = asyncio.get_running_loop()
+
+        self._printer = Printer(
+            ip_address=self._host,
+            access_code=self._access_code,
+            serial=self._serial,
+        )
+
+        # Callbacks laufen im paho-Thread
+        self._printer.mqtt_client.on_connect_handler = self._on_connect
+        self._printer.mqtt_client.on_message_handler = self._on_message
+        self._printer.mqtt_client.on_disconnect_handler = self._on_disconnect
+
+        # Reconnect-Backoff konfigurieren (paho auto-reconnect via loop_start)
+        self._printer.mqtt_client._client.reconnect_delay_set(
+            min_delay=1,
+            max_delay=self._reconnect_interval,
+        )
+
+        # MQTT starten (non-blocking: connect_async + loop_start in paho-Thread)
+        # pushall wird automatisch beim Connect gesendet (pushall_on_connect=True)
+        self._printer.mqtt_start()
+        logger.info(f"Bambu driver started for printer {self.printer_id} at {self._host}")
 
     async def stop(self) -> None:
         self._running = False
         if self._pending and self._pending.timer:
             self._pending.timer.cancel()
             self._pending = None
-        if self._task:
-            self._task.cancel()
-            try:
-                await self._task
-            except asyncio.CancelledError:
-                pass
+        if self._printer:
+            self._printer.mqtt_stop()
+            self._printer = None
+        self._connected = False
 
-    async def _run(self) -> None:
-        """Haupt-MQTT-Loop mit Auto-Reconnect."""
-        from aiomqtt import Client
+    # -- paho-Thread Callbacks ------------------------------------------------
 
-        while self._running:
-            try:
-                # SSL-Kontext ohne Zertifikatsprüfung (Bambu nutzt selbst-signierte Zerts)
-                ssl_context = ssl.create_default_context()
-                ssl_context.check_hostname = False
-                ssl_context.verify_mode = ssl.CERT_NONE
+    def _on_connect(self, mqtt_client, client, userdata, flags, rc, properties):
+        """Wird im paho-Thread aufgerufen wenn MQTT verbunden ist."""
+        self._connected = True
+        logger.info(f"Bambu driver connected to printer {self.printer_id} at {self._host}")
+        self.log_debug("event", "mqtt", {"event": "connected", "rc": str(rc)})
 
-                async with Client(
-                    hostname=self._host,
-                    port=8883,
-                    username=BAMBU_USERNAME,
-                    password=self._access_code,
-                    tls_context=ssl_context,
-                ) as client:
-                    self._mqtt_client = client
-                    self._connected = True
-                    logger.info(f"Bambu driver connected to printer {self.printer_id} at {self._host}")
+    def _on_disconnect(self, mqtt_client, client, userdata, disconnect_flags, rc, properties):
+        """Wird im paho-Thread aufgerufen wenn MQTT getrennt wird."""
+        self._connected = False
+        logger.warning(f"Bambu driver disconnected from printer {self.printer_id}: {rc}")
+        self.log_debug("event", "mqtt", {"event": "disconnected", "rc": str(rc)})
+        # paho auto-reconnect via loop_start() (reconnect_on_failure=True)
 
-                    # Subscribe zum Report-Topic
-                    topic = f"device/{self._serial}/report"
-                    await client.subscribe(topic)
-                    logger.info(f"Subscribed to {topic}")
+    def _on_message(self, mqtt_client, client, userdata, msg):
+        """Wird im paho-Thread für jede MQTT-Nachricht aufgerufen."""
+        try:
+            payload = json.loads(msg.payload.decode())
+            self.log_debug("in", str(msg.topic), payload)
 
-                    # PUSH_ALL senden, um sofort den vollständigen Druckerstatus zu erhalten
-                    request_topic = f"device/{self._serial}/request"
-                    push_all_cmd = json.dumps({"pushing": {"sequence_id": "0", "command": "pushall"}})
-                    await client.publish(request_topic, push_all_cmd)
-                    self.log_debug("out", request_topic, {"pushing": {"command": "pushall"}})
-                    logger.info(f"Sent pushall to printer {self.printer_id}")
-
-                    # Nachrichten empfangen
-                    async for message in client.messages:
-                        if not self._running:
-                            return
-                        try:
-                            payload = json.loads(message.payload.decode())
-                            self.log_debug("in", str(message.topic), payload)
-                            await self._handle_mqtt_message(payload)
-                        except json.JSONDecodeError as e:
-                            logger.error(f"Failed to decode MQTT message: {e}")
-                        except Exception as e:
-                            logger.error(f"Error handling MQTT message: {e}")
-
-            except asyncio.CancelledError:
+            # push_status Nachrichten verarbeiten
+            if payload.get("print", {}).get("command") == "push_status":
+                self._process_slots(payload)
                 return
-            except Exception as e:
-                logger.error(f"MQTT connection error for printer {self.printer_id}: {e}")
-                self._connected = False
-                self._mqtt_client = None
 
-                if not self._running:
-                    return
+            # get_version / push_info: AMS Seriennummern extrahieren
+            info_cmd = payload.get("info", {}).get("command", "")
+            if info_cmd in ("get_version", "push_info"):
+                self._process_version_info(payload)
+                return
 
-                logger.info(f"Reconnecting printer {self.printer_id} in {self._reconnect_interval}s")
-                try:
-                    await asyncio.sleep(self._reconnect_interval)
-                except asyncio.CancelledError:
-                    return
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to decode MQTT message: {e}")
+        except Exception as e:
+            logger.error(f"Error handling MQTT message: {e}")
 
-    async def _handle_mqtt_message(self, payload: dict) -> None:
-        """Verarbeitet eingehende MQTT-Nachrichten."""
-        # Nur push_status Nachrichten verarbeiten
-        if not payload.get("print", {}).get("command") == "push_status":
-            return
-            
+    def _process_version_info(self, payload: dict) -> None:
+        """AMS Seriennummern aus get_version/push_info Antwort extrahieren."""
+        modules = payload.get("info", {}).get("module", [])
+        for module in modules:
+            name = module.get("name", "")
+            if name.startswith("ams/"):
+                ams_id = name.split("/")[1]
+                sn = module.get("sn", "")
+                if sn:
+                    self._ams_serials[ams_id] = sn
+                    logger.debug(f"AMS {ams_id} serial: {sn}")
+
+    # -- Slot-Verarbeitung (paho-Thread) --------------------------------------
+
+    def _process_slots(self, payload: dict) -> None:
+        """AMS/Tray-Daten aus push_status extrahieren und slots_update emittieren."""
         ams_data = payload.get("print", {}).get("ams", {}).get("ams", [])
         vt_tray = payload.get("print", {}).get("vt_tray", {})
-        
-        slots = []
-        
-        # AMS-Einheiten mit Metadaten speichern
-        ams_units = []
+
+        slots: list[dict[str, Any]] = []
+
+        # AMS-Einheiten Metadaten
+        ams_units: list[dict[str, Any]] = []
         for ams_unit in ams_data:
-            ams_id = ams_unit.get("id", 0)
+            ams_id = int(ams_unit.get("id", 0))
             ams_units.append({
                 "ams_id": ams_id,
                 "humidity": ams_unit.get("humidity"),
                 "temp": ams_unit.get("temp"),
                 "tray_count": len(ams_unit.get("tray", [])),
+                "serial": self._ams_serials.get(str(ams_id), None),
             })
         self._current_ams_units = ams_units
 
-        # Prüfe auf neue Spulen (für Pending-Match)
+        # AMS-Trays verarbeiten
         for ams_unit in ams_data:
-            ams_id = ams_unit.get("id", 0)
+            ams_id = int(ams_unit.get("id", 0))
             trays = ams_unit.get("tray", [])
-            
+
             for tray in trays:
-                tray_id = tray.get("id", 0)
+                tray_id = int(tray.get("id", 0))
                 slot_index = f"{ams_id}-{tray_id}"
                 tray_type = tray.get("tray_type", "")
-                
+
                 if tray_type:
-                    # Slot-Name je nach Drucker-Modell
                     if self._is_ams_lite:
                         slot_name = f"AMS Lite - Slot {tray_id + 1}"
                     else:
@@ -175,19 +181,18 @@ class Driver(BaseDriver):
                         "nozzle_temp_max": tray.get("nozzle_temp_max"),
                         "present": True,
                     })
-                    
-                    # Prüfe auf Pending-Match
+
+                    # Pending-Spool Match
                     if self._pending and not self._pending.slot_index:
-                        # Kein spezifischer Slot angegeben → match auf jeden neuen Slot
                         logger.info(f"Pending match: slot {slot_index} has spool")
-                        await self._send_filament_setting(ams_id, tray_id, self._pending.filament_data)
-                        self._pending.timer.cancel()
+                        self._send_filament_setting(ams_id, tray_id, self._pending.filament_data)
+                        if self._pending.timer and self._loop:
+                            self._loop.call_soon_threadsafe(self._pending.timer.cancel)
                         self._pending = None
-                
+
                 elif self._pending and self._pending.slot_index == slot_index:
-                    # Slot ist leer, aber wir warten auf diesen Slot
                     pass
-        
+
         # Externe Spule (vt_tray)
         if vt_tray.get("tray_type"):
             slots.append({
@@ -200,66 +205,79 @@ class Driver(BaseDriver):
                 "nozzle_temp_max": vt_tray.get("nozzle_temp_max"),
                 "present": True,
             })
-            
-            # Prüfe auf Pending-Match für externe Spule
+
             if self._pending and self._pending.slot_index == "255-254":
                 logger.info("Pending match: external tray has spool")
-                await self._send_filament_setting(255, 254, self._pending.filament_data)
-                self._pending.timer.cancel()
+                self._send_filament_setting(255, 254, self._pending.filament_data)
+                if self._pending.timer and self._loop:
+                    self._loop.call_soon_threadsafe(self._pending.timer.cancel)
                 self._pending = None
-        
-        # Slots an System melden
+
+        # Event an System melden (muss im asyncio-Thread passieren)
         if slots:
             self._current_slots = slots
-            self.emit({
-                "event_type": "slots_update",
-                "slots": slots,
-            })
+            if self._loop:
+                ext_exists = any(s.get("slot_index") == "255-254" for s in slots)
+                total_slots = sum(u.get("tray_count", 0) for u in ams_units)
+                if ext_exists:
+                    total_slots += 1
+                ams_info = {
+                    "ams_count": len(ams_units),
+                    "ams_type": "AMS Lite" if self._is_ams_lite else "AMS",
+                    "slot_count": total_slots,
+                    "external_spool": ext_exists,
+                    "ams_units": ams_units,
+                }
+                self._loop.call_soon_threadsafe(
+                    self.emit,
+                    {"event_type": "slots_update", "slots": slots, "ams_info": ams_info},
+                )
 
-    async def _send_filament_setting(self, ams_id: int, tray_id: int, filament_data: dict) -> None:
-        """Sendet Filament-Einstellungen an den Drucker."""
-        if not self._mqtt_client:
+    # -- Filament-Setting senden ----------------------------------------------
+
+    def _send_filament_setting(self, ams_id: int, tray_id: int, filament_data: dict) -> None:
+        """Filament-Setting an Drucker senden. Läuft in separatem Thread,
+        da set_filament_printer() blockierend ist (wait_for_publish)."""
+        threading.Thread(
+            target=self._do_send_filament_setting,
+            args=(ams_id, tray_id, filament_data),
+            daemon=True,
+        ).start()
+
+    def _do_send_filament_setting(self, ams_id: int, tray_id: int, filament_data: dict) -> None:
+        """Blockierender Filament-Setting Versand (Thread-Pool)."""
+        if not self._printer:
             logger.error("Cannot send filament setting: not connected")
             return
-        
-        # Farbe aus filament_data
+
         color = filament_data.get("color", "")
-        if len(color) == 6:
-            color = color + "FF"  # Alpha-Kanal hinzufügen
-        elif len(color) != 8:
-            color = "FFFFFFFF"  # Default: weiß
-        
-        # Temperatur
-        min_temp = filament_data.get("nozzle_temp_min", 190)
-        max_temp = filament_data.get("nozzle_temp_max", 230)
-        
-        # Filament-Typ (z.B. "PLA", "PETG")
-        tray_type = filament_data.get("material_type", "PLA")
-        
-        # Bambu Filament-ID (mapping oder aus filament_data)
-        tray_info_idx = filament_data.get("tray_info_idx", "GFL99")
-        
-        command = {
-            "print": {
-                "sequence_id": "0",
-                "command": "ams_filament_setting",
-                "ams_id": ams_id if ams_id < 200 else 255,
-                "tray_id": tray_id if tray_id < 200 else 254,
-                "tray_color": color,
-                "nozzle_temp_min": min_temp,
-                "nozzle_temp_max": max_temp,
-                "tray_type": tray_type,
-                "tray_info_idx": tray_info_idx,
-            }
-        }
-        
+        if len(color) == 8:
+            color = color[:6]  # Alpha-Kanal entfernen
+        elif len(color) != 6:
+            color = "FFFFFF"  # Default weiß
+
         try:
-            topic = f"device/{self._serial}/request"
-            await self._mqtt_client.publish(topic, json.dumps(command))
-            self.log_debug("out", topic, command)
+            from bambulabs_api import AMSFilamentSettings
+
+            filament = AMSFilamentSettings(
+                tray_info_idx=filament_data.get("tray_info_idx", "GFL99"),
+                nozzle_temp_min=filament_data.get("nozzle_temp_min", 190),
+                nozzle_temp_max=filament_data.get("nozzle_temp_max", 230),
+                tray_type=filament_data.get("material_type", "PLA"),
+            )
+            result = self._printer.set_filament_printer(
+                color=color,
+                filament=filament,
+                ams_id=ams_id if ams_id < 200 else 255,
+                tray_id=tray_id if tray_id < 200 else 254,
+            )
+            self.log_debug("out", f"device/{self._serial}/request",
+                           {"command": "ams_filament_setting", "success": result})
             logger.info(f"Sent filament setting to printer {self.printer_id}: slot {ams_id}-{tray_id}")
         except Exception as e:
             logger.error(f"Failed to send filament setting: {e}")
+
+    # -- Pending-Spool API ----------------------------------------------------
 
     async def assign_pending_spool(
         self,
@@ -282,10 +300,13 @@ class Driver(BaseDriver):
             logger.info(f"Pending spool {self._pending.spool_id} timed out")
             self._pending = None
 
+    # -- Health ---------------------------------------------------------------
+
     def health(self) -> dict[str, Any]:
-        ams_slots = [s for s in self._current_slots if s.get("slot_index") != "255-254"]
-        ext_slots = [s for s in self._current_slots if s.get("slot_index") == "255-254"]
-        ams_ids = set(s.get("slot_index", "").split("-")[0] for s in ams_slots)
+        ext_exists = any(s.get("slot_index") == "255-254" for s in self._current_slots)
+        total_slots = sum(u.get("tray_count", 0) for u in self._current_ams_units)
+        if ext_exists:
+            total_slots += 1
         return {
             "driver_key": self.driver_key,
             "printer_id": self.printer_id,
@@ -294,8 +315,8 @@ class Driver(BaseDriver):
             "pending": self._pending is not None,
             "printer_model": self._printer_model,
             "ams_type": "AMS Lite" if self._is_ams_lite else "AMS",
-            "ams_count": len(ams_ids),
-            "slot_count": len(ams_slots),
-            "external_spool": len(ext_slots) > 0,
+            "ams_count": len(self._current_ams_units),
+            "slot_count": total_slots,
+            "external_spool": ext_exists,
             "ams_units": self._current_ams_units,
         }
