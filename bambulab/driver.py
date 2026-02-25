@@ -42,6 +42,10 @@ class Driver(BaseDriver):
         self._access_code = config.get("access_code", "")
         self._connected = False
         self._reconnect_interval = config.get("reconnect_interval_minutes", DEFAULT_RECONNECT_INTERVAL) * 60
+        self._current_slots: list[dict[str, Any]] = []
+        self._current_ams_units: list[dict[str, Any]] = []
+        self._printer_model = config.get("printer_model", "P1S")
+        self._is_ams_lite = self._printer_model in ("A1", "A1_MINI")
 
     async def start(self) -> None:
         self._running = True
@@ -86,6 +90,13 @@ class Driver(BaseDriver):
                     await client.subscribe(topic)
                     logger.info(f"Subscribed to {topic}")
 
+                    # PUSH_ALL senden, um sofort den vollständigen Druckerstatus zu erhalten
+                    request_topic = f"device/{self._serial}/request"
+                    push_all_cmd = json.dumps({"pushing": {"sequence_id": "0", "command": "pushall"}})
+                    await client.publish(request_topic, push_all_cmd)
+                    self.log_debug("out", request_topic, {"pushing": {"command": "pushall"}})
+                    logger.info(f"Sent pushall to printer {self.printer_id}")
+
                     # Nachrichten empfangen
                     async for message in client.messages:
                         if not self._running:
@@ -126,6 +137,18 @@ class Driver(BaseDriver):
         
         slots = []
         
+        # AMS-Einheiten mit Metadaten speichern
+        ams_units = []
+        for ams_unit in ams_data:
+            ams_id = ams_unit.get("id", 0)
+            ams_units.append({
+                "ams_id": ams_id,
+                "humidity": ams_unit.get("humidity"),
+                "temp": ams_unit.get("temp"),
+                "tray_count": len(ams_unit.get("tray", [])),
+            })
+        self._current_ams_units = ams_units
+
         # Prüfe auf neue Spulen (für Pending-Match)
         for ams_unit in ams_data:
             ams_id = ams_unit.get("id", 0)
@@ -137,10 +160,14 @@ class Driver(BaseDriver):
                 tray_type = tray.get("tray_type", "")
                 
                 if tray_type:
-                    # Slot hat eine Spule
+                    # Slot-Name je nach Drucker-Modell
+                    if self._is_ams_lite:
+                        slot_name = f"AMS Lite - Slot {tray_id + 1}"
+                    else:
+                        slot_name = f"AMS {ams_id} - Slot {tray_id + 1}"
                     slots.append({
                         "slot_index": slot_index,
-                        "slot_name": f"AMS {ams_id} - Slot {tray_id + 1}",
+                        "slot_name": slot_name,
                         "tray_info_idx": tray.get("tray_info_idx", ""),
                         "tray_type": tray_type,
                         "tray_color": tray.get("tray_color", ""),
@@ -183,6 +210,7 @@ class Driver(BaseDriver):
         
         # Slots an System melden
         if slots:
+            self._current_slots = slots
             self.emit({
                 "event_type": "slots_update",
                 "slots": slots,
@@ -255,10 +283,19 @@ class Driver(BaseDriver):
             self._pending = None
 
     def health(self) -> dict[str, Any]:
+        ams_slots = [s for s in self._current_slots if s.get("slot_index") != "255-254"]
+        ext_slots = [s for s in self._current_slots if s.get("slot_index") == "255-254"]
+        ams_ids = set(s.get("slot_index", "").split("-")[0] for s in ams_slots)
         return {
             "driver_key": self.driver_key,
             "printer_id": self.printer_id,
             "running": self._running,
             "connected": self._connected,
             "pending": self._pending is not None,
+            "printer_model": self._printer_model,
+            "ams_type": "AMS Lite" if self._is_ams_lite else "AMS",
+            "ams_count": len(ams_ids),
+            "slot_count": len(ams_slots),
+            "external_spool": len(ext_slots) > 0,
+            "ams_units": self._current_ams_units,
         }
