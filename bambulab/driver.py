@@ -11,6 +11,7 @@ logger = logging.getLogger(__name__)
 
 BAMBU_USERNAME = "bblp"
 DEFAULT_TIMEOUT = 60
+DEFAULT_RECONNECT_INTERVAL = 5
 
 
 class PendingSpool:
@@ -40,6 +41,7 @@ class Driver(BaseDriver):
         self._serial = config.get("serial", "")
         self._access_code = config.get("access_code", "")
         self._connected = False
+        self._reconnect_interval = config.get("reconnect_interval_minutes", DEFAULT_RECONNECT_INTERVAL) * 60
 
     async def start(self) -> None:
         self._running = True
@@ -58,46 +60,60 @@ class Driver(BaseDriver):
                 pass
 
     async def _run(self) -> None:
-        """Haupt-MQTT-Loop."""
-        try:
-            from aiomqtt import Client
-            
-            # SSL-Kontext ohne Zertifikatsprüfung (Bambu nutzt selbst-signierte Zerts)
-            ssl_context = ssl.create_default_context()
-            ssl_context.check_hostname = False
-            ssl_context.verify_mode = ssl.CERT_NONE
-            
-            async with Client(
-                hostname=self._host,
-                port=8883,
-                username=BAMBU_USERNAME,
-                password=self._access_code,
-                tls_context=ssl_context,
-            ) as client:
-                self._mqtt_client = client
-                self._connected = True
-                logger.info(f"Bambu driver connected to printer {self.printer_id} at {self._host}")
-                
-                # Subscribe zum Report-Topic
-                topic = f"device/{self._serial}/report"
-                await client.subscribe(topic)
-                logger.info(f"Subscribed to {topic}")
-                
-                # Nachrichten empfangen
-                async for message in client.messages:
-                    if not self._running:
-                        break
-                    try:
-                        payload = json.loads(message.payload.decode())
-                        await self._handle_mqtt_message(payload)
-                    except json.JSONDecodeError as e:
-                        logger.error(f"Failed to decode MQTT message: {e}")
-                    except Exception as e:
-                        logger.error(f"Error handling MQTT message: {e}")
-                        
-        except Exception as e:
-            logger.error(f"MQTT connection error for printer {self.printer_id}: {e}")
-            self._connected = False
+        """Haupt-MQTT-Loop mit Auto-Reconnect."""
+        from aiomqtt import Client
+
+        while self._running:
+            try:
+                # SSL-Kontext ohne Zertifikatsprüfung (Bambu nutzt selbst-signierte Zerts)
+                ssl_context = ssl.create_default_context()
+                ssl_context.check_hostname = False
+                ssl_context.verify_mode = ssl.CERT_NONE
+
+                async with Client(
+                    hostname=self._host,
+                    port=8883,
+                    username=BAMBU_USERNAME,
+                    password=self._access_code,
+                    tls_context=ssl_context,
+                ) as client:
+                    self._mqtt_client = client
+                    self._connected = True
+                    logger.info(f"Bambu driver connected to printer {self.printer_id} at {self._host}")
+
+                    # Subscribe zum Report-Topic
+                    topic = f"device/{self._serial}/report"
+                    await client.subscribe(topic)
+                    logger.info(f"Subscribed to {topic}")
+
+                    # Nachrichten empfangen
+                    async for message in client.messages:
+                        if not self._running:
+                            return
+                        try:
+                            payload = json.loads(message.payload.decode())
+                            self.log_debug("in", str(message.topic), payload)
+                            await self._handle_mqtt_message(payload)
+                        except json.JSONDecodeError as e:
+                            logger.error(f"Failed to decode MQTT message: {e}")
+                        except Exception as e:
+                            logger.error(f"Error handling MQTT message: {e}")
+
+            except asyncio.CancelledError:
+                return
+            except Exception as e:
+                logger.error(f"MQTT connection error for printer {self.printer_id}: {e}")
+                self._connected = False
+                self._mqtt_client = None
+
+                if not self._running:
+                    return
+
+                logger.info(f"Reconnecting printer {self.printer_id} in {self._reconnect_interval}s")
+                try:
+                    await asyncio.sleep(self._reconnect_interval)
+                except asyncio.CancelledError:
+                    return
 
     async def _handle_mqtt_message(self, payload: dict) -> None:
         """Verarbeitet eingehende MQTT-Nachrichten."""
@@ -212,6 +228,7 @@ class Driver(BaseDriver):
         try:
             topic = f"device/{self._serial}/request"
             await self._mqtt_client.publish(topic, json.dumps(command))
+            self.log_debug("out", topic, command)
             logger.info(f"Sent filament setting to printer {self.printer_id}: slot {ams_id}-{tray_id}")
         except Exception as e:
             logger.error(f"Failed to send filament setting: {e}")

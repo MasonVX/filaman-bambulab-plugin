@@ -3,7 +3,7 @@
   "name": "Bambu Lab",
   "driver_key": "bambulab",
   "plugin_type": "driver",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Bambu Lab printer driver via MQTT. Supports AMS, RFID and automatic filament matching.",
   "author": "FilaMan",
   "homepage": "https://filaman.dev",
@@ -33,6 +33,14 @@
         "default": 60,
         "minimum": 10,
         "maximum": 300
+      },
+      "reconnect_interval_minutes": {
+        "type": "integer",
+        "title": "Reconnect Interval (Minuten)",
+        "description": "Interval in minutes between reconnection attempts on connection loss",
+        "default": 5,
+        "minimum": 1,
+        "maximum": 60
       }
     },
     "required": ["host", "serial", "access_code"]
