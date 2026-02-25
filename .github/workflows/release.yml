@@ -31,11 +31,8 @@ jobs:
               continue
             fi
 
-            TAG="v${VERSION}"
+            TAG="${FOLDER_NAME}-v${VERSION}"
             ZIP_NAME="${FOLDER_NAME}-${VERSION}.zip"
-
-            echo "📦 Erstelle $ZIP_NAME ..."
-            zip -r "$ZIP_NAME" "$FOLDER_NAME" -x "$FOLDER_NAME/__pycache__/*" "$FOLDER_NAME/*.pyc"
 
             # Prüfen ob Release bereits existiert
             if gh release view "$TAG" > /dev/null 2>&1; then
@@ -43,11 +40,26 @@ jobs:
               continue
             fi
 
+            echo "📦 Erstelle $ZIP_NAME ..."
+            zip -r "$ZIP_NAME" "$FOLDER_NAME" -x "$FOLDER_NAME/__pycache__/*" "$FOLDER_NAME/*.pyc"
+
+            # plugin.json als Release-Body für API-Abfrage
+            DESCRIPTION=$(grep -o '"description"[[:space:]]*:[[:space:]]*"[^"]*"' "$PLUGIN_JSON" | head -1 | sed 's/.*"description"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
+
             echo "📤 Erstelle GitHub Release $TAG ..."
             gh release create "$TAG" "$ZIP_NAME" \
               --title "$FOLDER_NAME $VERSION" \
-              --notes "Plugin release $FOLDER_NAME v${VERSION}" \
-              --latest
+              --notes "$(cat <<EOF
+**Plugin:** $FOLDER_NAME
+**Version:** $VERSION
+**Description:** $DESCRIPTION
+
+\`\`\`json
+$(cat "$PLUGIN_JSON")
+\`\`\`
+EOF
+            )" \
+              --latest=false
 
             echo "✅ Release $TAG mit $ZIP_NAME erstellt."
           done
