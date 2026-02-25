@@ -46,6 +46,7 @@ class Driver(BaseDriver):
         self._is_ams_lite = self._printer_model in ("A1", "A1_MINI")
         self._loop: asyncio.AbstractEventLoop | None = None
         self._ams_serials: dict[str, str] = {}  # ams_id -> serial number
+        self._slots_processed = False  # Nur einmal pro Verbindung verarbeiten
 
     async def start(self) -> None:
         from bambulabs_api import Printer
@@ -96,6 +97,7 @@ class Driver(BaseDriver):
     def _on_disconnect(self, mqtt_client, client, userdata, disconnect_flags, rc, properties):
         """Wird im paho-Thread aufgerufen wenn MQTT getrennt wird."""
         self._connected = False
+        self._slots_processed = False
         logger.warning(f"Bambu driver disconnected from printer {self.printer_id}: {rc}")
         self.log_debug("event", "mqtt", {"event": "disconnected", "rc": str(rc)})
         # paho auto-reconnect via loop_start() (reconnect_on_failure=True)
@@ -137,9 +139,21 @@ class Driver(BaseDriver):
     # -- Slot-Verarbeitung (paho-Thread) --------------------------------------
 
     def _process_slots(self, payload: dict) -> None:
-        """AMS/Tray-Daten aus push_status extrahieren und slots_update emittieren."""
-        ams_data = payload.get("print", {}).get("ams", {}).get("ams", [])
-        vt_tray = payload.get("print", {}).get("vt_tray")  # None = nicht vorhanden
+        """AMS/Tray-Daten aus push_status extrahieren und slots_update emittieren.
+        Wird nur einmal pro Verbindung verarbeitet — AMS-Konfiguration ändert sich
+        im laufenden Betrieb nicht."""
+        if self._slots_processed:
+            return
+
+        print_data = payload.get("print", {})
+        ams_section = print_data.get("ams")
+        vt_tray = print_data.get("vt_tray")
+
+        # Nur verarbeiten wenn AMS- oder vt_tray-Daten vorhanden
+        if ams_section is None and vt_tray is None:
+            return
+
+        ams_data = (ams_section or {}).get("ams", [])
 
         slots: list[dict[str, Any]] = []
 
@@ -229,6 +243,7 @@ class Driver(BaseDriver):
 
         # Event an System melden (muss im asyncio-Thread passieren)
         self._current_slots = slots
+        self._slots_processed = True
         if self._loop:
             self._loop.call_soon_threadsafe(
                 self.emit,
