@@ -1,0 +1,58 @@
+name: Release Plugins
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Find and release plugins
+        env:
+          GITEA_TOKEN: ${{ secrets.PACKAGES_TOKEN }}
+          GITEA_URL: ${{ github.server_url }}
+          OWNER: ${{ github.repository_owner }}
+          PACKAGE_NAME: filaman-bambulab-plugin
+        run: |
+          set -euo pipefail
+
+          # Alle Plugin-Ordner mit plugin.json finden
+          for PLUGIN_JSON in $(find . -maxdepth 2 -name "plugin.json" -not -path "./.git/*"); do
+            PLUGIN_DIR=$(dirname "$PLUGIN_JSON")
+            FOLDER_NAME=$(basename "$PLUGIN_DIR")
+            VERSION=$(grep -o '"version"[[:space:]]*:[[:space:]]*"[^"]*"' "$PLUGIN_JSON" | head -1 | sed 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
+
+            if [ -z "$VERSION" ]; then
+              echo "⚠️  Keine Version in $PLUGIN_JSON, überspringe."
+              continue
+            fi
+
+            ZIP_NAME="${FOLDER_NAME}-${VERSION}.zip"
+
+            echo "📦 Erstelle $ZIP_NAME ..."
+            zip -r "$ZIP_NAME" "$FOLDER_NAME" -x "$FOLDER_NAME/__pycache__/*" "$FOLDER_NAME/*.pyc"
+
+            echo "📤 Upload $ZIP_NAME als Gitea Package ..."
+            HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+              -X PUT \
+              -H "Authorization: token ${GITEA_TOKEN}" \
+              -H "Content-Type: application/zip" \
+              --data-binary "@${ZIP_NAME}" \
+              "${GITEA_URL}/api/packages/${OWNER}/generic/${PACKAGE_NAME}/${VERSION}/${ZIP_NAME}")
+
+            if [ "$HTTP_STATUS" = "201" ]; then
+              echo "✅ ${PACKAGE_NAME}/${VERSION}/${ZIP_NAME} hochgeladen."
+            elif [ "$HTTP_STATUS" = "409" ]; then
+              echo "⚠️  ${PACKAGE_NAME}/${VERSION} existiert bereits. Überspringe."
+            else
+              echo "❌ Upload fehlgeschlagen (HTTP $HTTP_STATUS)."
+              exit 1
+            fi
+          done
+
+          echo "🎉 Fertig!"
