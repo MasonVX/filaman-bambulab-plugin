@@ -43,22 +43,17 @@ jobs:
             echo "📦 Erstelle $ZIP_NAME ..."
             zip -r "$ZIP_NAME" "$FOLDER_NAME" -x "$FOLDER_NAME/__pycache__/*" "$FOLDER_NAME/*.pyc"
 
-            # plugin.json als Release-Body für API-Abfrage
+            # Release-Notes zusammenbauen
             DESCRIPTION=$(grep -o '"description"[[:space:]]*:[[:space:]]*"[^"]*"' "$PLUGIN_JSON" | head -1 | sed 's/.*"description"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
+            NOTES="**Plugin:** ${FOLDER_NAME}"
+            NOTES="${NOTES}%0A**Version:** ${VERSION}"
+            NOTES="${NOTES}%0A**Description:** ${DESCRIPTION}"
 
             echo "📤 Erstelle GitHub Release $TAG ..."
+            printf '%s' "$NOTES" | sed 's/%0A/\n/g' > /tmp/release_notes.md
             gh release create "$TAG" "$ZIP_NAME" \
               --title "$FOLDER_NAME $VERSION" \
-              --notes "$(cat <<EOF
-**Plugin:** $FOLDER_NAME
-**Version:** $VERSION
-**Description:** $DESCRIPTION
-
-\`\`\`json
-$(cat "$PLUGIN_JSON")
-\`\`\`
-EOF
-            )" \
+              --notes-file /tmp/release_notes.md \
               --latest=false
 
             echo "✅ Release $TAG mit $ZIP_NAME erstellt."
