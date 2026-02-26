@@ -46,7 +46,6 @@ class Driver(BaseDriver):
         self._is_ams_lite = self._printer_model in ("A1", "A1_MINI")
         self._loop: asyncio.AbstractEventLoop | None = None
         self._ams_serials: dict[str, str] = {}  # ams_id -> serial number
-        self._slots_processed = False  # Nur einmal pro Verbindung verarbeiten
 
     async def start(self) -> None:
         from bambulabs_api import Printer
@@ -97,7 +96,7 @@ class Driver(BaseDriver):
     def _on_disconnect(self, mqtt_client, client, userdata, disconnect_flags, rc, properties):
         """Wird im paho-Thread aufgerufen wenn MQTT getrennt wird."""
         self._connected = False
-        self._slots_processed = False
+        self._current_slots = []  # Force full re-sync on reconnect
         logger.warning(f"Bambu driver disconnected from printer {self.printer_id}: {rc}")
         self.log_debug("event", "mqtt", {"event": "disconnected", "rc": str(rc)})
         # paho auto-reconnect via loop_start() (reconnect_on_failure=True)
@@ -140,10 +139,8 @@ class Driver(BaseDriver):
 
     def _process_slots(self, payload: dict) -> None:
         """AMS/Tray-Daten aus push_status extrahieren und slots_update emittieren.
-        Wird nur einmal pro Verbindung verarbeitet — AMS-Konfiguration ändert sich
-        im laufenden Betrieb nicht."""
-        if self._slots_processed:
-            return
+        Wird bei jeder push_status Nachricht aufgerufen. Emittiert nur wenn sich
+        die Slot-Daten geändert haben, um unnötige DB-Writes zu vermeiden."""
 
         print_data = payload.get("print", {})
         ams_section = print_data.get("ams")
@@ -246,9 +243,15 @@ class Driver(BaseDriver):
             "ams_units": ams_units,
         }
 
+        # Nur emittieren wenn sich Slot-Daten geändert haben
+        if slots == self._current_slots:
+            # AMS-Units trotzdem aktualisieren (Temperatur/Humidity ändern sich)
+            self._current_ams_units = ams_units
+            return
+
         # Event an System melden (muss im asyncio-Thread passieren)
         self._current_slots = slots
-        self._slots_processed = True
+        logger.info(f"Slot data changed for printer {self.printer_id}, emitting slots_update")
         if self._loop:
             self._loop.call_soon_threadsafe(
                 self.emit,
@@ -313,7 +316,7 @@ class Driver(BaseDriver):
         if self._printer:
             self._printer.mqtt_stop()
             self._connected = False
-            self._slots_processed = False
+            self._current_slots = []  # Force full re-sync on reconnect
             self._printer.mqtt_start()
             logger.info(f"Bambu driver reconnected for printer {self.printer_id}")
 
