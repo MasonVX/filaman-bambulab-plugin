@@ -266,7 +266,7 @@ class Driver(BaseDriver):
                     ams_id_parsed, tray_id_parsed = int(parts[0]), int(parts[1])
                 except (ValueError, IndexError):
                     continue
-                logger.warning(f"Tray data changed at slot {sid}: "
+                logger.info(f"Tray data changed at slot {sid}: "
                            f"assigning pending spool {self._pending.spool_id}")
                 self._send_filament_setting(ams_id_parsed, tray_id_parsed, self._pending.filament_data)
                 if self._pending.timer and self._loop:
