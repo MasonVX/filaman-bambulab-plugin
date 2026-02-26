@@ -46,7 +46,6 @@ class Driver(BaseDriver):
         self._is_ams_lite = self._printer_model in ("A1", "A1_MINI")
         self._loop: asyncio.AbstractEventLoop | None = None
         self._ams_serials: dict[str, str] = {}  # ams_id -> serial number
-        self._current_tray_now: str | None = None  # Track tray_now for auto-assignment
 
     async def start(self) -> None:
         from bambulabs_api import Printer
@@ -145,41 +144,14 @@ class Driver(BaseDriver):
     def _process_slots(self, payload: dict) -> None:
         """AMS/Tray-Daten aus push_status extrahieren und slots_update emittieren.
         Wird bei jeder push_status Nachricht aufgerufen. Emittiert nur wenn sich
-        die Slot-Daten geändert haben, um unnötige DB-Writes zu vermeiden."""
+        die Slot-Daten geändert haben, um unnötige DB-Writes zu vermeiden.
+
+        Auto-assignment nutzt ausschließlich Feld-Vergleich (wie C++ Referenz):
+        Erkennt Änderungen in tray_info_idx, tray_type, tray_color, cali_idx, setting_id."""
 
         print_data = payload.get("print", {})
         ams_section = print_data.get("ams")
         vt_tray = print_data.get("vt_tray")
-
-        # tray_now/tray_pre: Insertion-Detection
-        tray_now = (ams_section or {}).get("tray_now")
-        tray_pre = (ams_section or {}).get("tray_pre")
-        if tray_now is not None:
-            self._current_tray_now = str(tray_now)
-
-        # Insertion-Detection: tray_now == tray_pre bedeutet Spule eingelegt
-        if (tray_now is not None and tray_pre is not None
-                and str(tray_now) == str(tray_pre)
-                and self._pending):
-            try:
-                tray_now_int = int(tray_now)
-                if tray_now_int != 254:  # 254 = kein Tray aktiv
-                    if tray_now_int == 255:
-                        ams_id_ins, tray_id_ins = 255, 254
-                    else:
-                        ams_id_ins = tray_now_int // 4
-                        tray_id_ins = tray_now_int % 4
-                    slot_index_ins = f"{ams_id_ins}-{tray_id_ins}"
-                    # Slot-Filter: wenn Pending einen bestimmten Slot will
-                    if self._pending.slot_index is None or self._pending.slot_index == slot_index_ins:
-                        logger.info(f"Spool insertion detected (tray_now==tray_pre=={tray_now}): "
-                                   f"assigning pending spool {self._pending.spool_id} to slot {slot_index_ins}")
-                        self._send_filament_setting(ams_id_ins, tray_id_ins, self._pending.filament_data)
-                        if self._pending.timer and self._loop:
-                            self._loop.call_soon_threadsafe(self._pending.timer.cancel)
-                        self._pending = None
-            except (ValueError, TypeError) as e:
-                logger.warning(f"Invalid tray_now value '{tray_now}': {e}")
 
         # Nur verarbeiten wenn AMS- oder vt_tray-Daten vorhanden
         if ams_section is None and vt_tray is None:
@@ -253,15 +225,11 @@ class Driver(BaseDriver):
                 "present": ext_has_filament,
             })
 
-            if ext_has_filament and self._pending and self._pending.slot_index == "255-254":
-                logger.info("Pending match: external tray has spool")
-                self._send_filament_setting(255, 254, self._pending.filament_data)
-                if self._pending.timer and self._loop:
-                    self._loop.call_soon_threadsafe(self._pending.timer.cancel)
-                self._pending = None
 
         # -- Auto-assignment: Tray-Daten-Vergleich (wie C++ Implementierung) --
-        # Erkennt wenn sich Tray-Felder ändern (Spule eingelegt/gewechselt)
+        # Erkennt wenn sich Tray-Felder ändern (Spule eingelegt/gewechselt).
+        # Vergleicht tray_info_idx, tray_type, tray_color, cali_idx und setting_id
+        # gegen die zuletzt gespeicherten Slot-Daten.
         if self._pending and self._current_slots:
             _compare_fields = ("tray_info_idx", "tray_type", "tray_color", "cali_idx")
             for new_slot in slots:
@@ -273,11 +241,20 @@ class Driver(BaseDriver):
                 old_slot = next((s for s in self._current_slots if s.get("slot_index") == sid), None)
                 if old_slot is None:
                     continue  # Kein Vergleich möglich (erster Sync)
+                # Wenn alter Slot leer war (tray_type war leer), setting_id zurücksetzen (wie C++)
+                if not old_slot.get("tray_type", ""):
+                    old_slot["setting_id"] = ""
+                # setting_id null → leerer String (wie C++: if (trayObj["setting_id"].isNull()) trayObj["setting_id"] = "")
+                new_setting_id = new_slot.get("setting_id") or ""
+                old_setting_id = old_slot.get("setting_id") or ""
                 # Prüfe ob sich relevante Felder geändert haben
                 has_changed = any(
                     new_slot.get(f, "") != old_slot.get(f, "")
                     for f in _compare_fields
                 )
+                # setting_id: nur vergleichen wenn neuer Wert nicht leer ist (wie C++)
+                if not has_changed and new_setting_id and new_setting_id != old_setting_id:
+                    has_changed = True
                 if not has_changed:
                     continue
                 # Slot-Filter: wenn Pending einen bestimmten Slot will
@@ -289,7 +266,7 @@ class Driver(BaseDriver):
                     ams_id_parsed, tray_id_parsed = int(parts[0]), int(parts[1])
                 except (ValueError, IndexError):
                     continue
-                logger.info(f"Tray data changed at slot {sid}: "
+                logger.warning(f"Tray data changed at slot {sid}: "
                            f"assigning pending spool {self._pending.spool_id}")
                 self._send_filament_setting(ams_id_parsed, tray_id_parsed, self._pending.filament_data)
                 if self._pending.timer and self._loop:
