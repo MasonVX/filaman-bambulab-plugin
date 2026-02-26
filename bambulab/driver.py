@@ -183,7 +183,7 @@ class Driver(BaseDriver):
                 if self._is_ams_lite:
                     slot_name = f"AMS Lite - Slot {tray_id + 1}"
                 else:
-                    slot_name = f"AMS {ams_id} - Slot {tray_id + 1}"
+                    slot_name = f"AMS {ams_id + 1} - Slot {tray_id + 1}"
 
                 present = bool(tray_type)
                 slots.append({
