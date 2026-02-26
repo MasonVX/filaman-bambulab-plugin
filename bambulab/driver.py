@@ -258,6 +258,33 @@ class Driver(BaseDriver):
                     self._loop.call_soon_threadsafe(self._pending.timer.cancel)
                 self._pending = None
 
+        # -- AMS tray insertion detection for auto-assignment --
+        if self._pending and self._current_slots:
+            for new_slot in slots:
+                sid = new_slot.get("slot_index", "")
+                if not new_slot.get("present"):
+                    continue
+                # Find matching previous slot
+                old_slot = next((s for s in self._current_slots if s.get("slot_index") == sid), None)
+                if old_slot and old_slot.get("present"):
+                    continue  # Was already present, not a new insertion
+                # Slot went from empty/missing to present
+                if self._pending.slot_index is not None and self._pending.slot_index != sid:
+                    continue  # Pending targets a specific slot, this isn't it
+                # Parse ams_id and tray_id from slot_index (e.g. "0-1" or "255-254")
+                try:
+                    parts = sid.split("-")
+                    ams_id_parsed, tray_id_parsed = int(parts[0]), int(parts[1])
+                except (ValueError, IndexError):
+                    continue
+                logger.info(f"AMS tray insertion detected at slot {sid}: "
+                           f"assigning pending spool {self._pending.spool_id}")
+                self._send_filament_setting(ams_id_parsed, tray_id_parsed, self._pending.filament_data)
+                if self._pending.timer and self._loop:
+                    self._loop.call_soon_threadsafe(self._pending.timer.cancel)
+                self._pending = None
+                break  # Only assign to first detected insertion
+
         # AMS/Slot Zusammenfassung
         total_slots = sum(u.get("tray_count", 0) for u in ams_units)
         if has_external:
