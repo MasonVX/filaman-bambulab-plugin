@@ -3,7 +3,7 @@
   "name": "Bambu Lab",
   "driver_key": "bambulab",
   "plugin_type": "driver",
-  "version": "2.1.4",
+  "version": "2.1.5",
   "description": "Bambu Lab printer driver via bambulabs_api. Supports AMS, RFID and automatic filament matching.",
   "author": "FilaMan",
   "homepage": "https://filaman.dev",
@@ -33,14 +33,6 @@
         "type": "string",
         "title": "Access Code",
         "description": "Printer access code"
-      },
-      "timeout_seconds": {
-        "type": "integer",
-        "title": "Timeout (automatische Spulenzuordnung)",
-        "description": "Time to wait for printer confirmation after assigning a spool",
-        "default": 60,
-        "minimum": 10,
-        "maximum": 300
       },
       "reconnect_interval_minutes": {
         "type": "integer",

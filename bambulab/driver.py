@@ -34,7 +34,7 @@ class Driver(BaseDriver):
         super().__init__(printer_id, config, emitter)
         self._printer: Any = None  # bambulabs_api.Printer
         self._pending: PendingSpool | None = None
-        self._timeout_seconds = config.get("timeout_seconds", DEFAULT_TIMEOUT)
+        self._timeout_seconds = DEFAULT_TIMEOUT  # Can be overridden per assign_pending_spool call
         self._host = config.get("host", "")
         self._serial = config.get("serial", "")
         self._access_code = config.get("access_code", "")
@@ -46,6 +46,7 @@ class Driver(BaseDriver):
         self._is_ams_lite = self._printer_model in ("A1", "A1_MINI")
         self._loop: asyncio.AbstractEventLoop | None = None
         self._ams_serials: dict[str, str] = {}  # ams_id -> serial number
+        self._current_tray_now: str | None = None  # Track tray_now for auto-assignment
 
     async def start(self) -> None:
         from bambulabs_api import Printer
@@ -146,11 +147,43 @@ class Driver(BaseDriver):
         ams_section = print_data.get("ams")
         vt_tray = print_data.get("vt_tray")
 
+        # tray_now: Erkennung wenn ein Tray gewechselt wird
+        tray_now = (ams_section or {}).get("tray_now")
+        if tray_now is not None:
+            tray_now_str = str(tray_now)
+            prev_tray_now = self._current_tray_now
+            self._current_tray_now = tray_now_str
+
+            # Nur bei tatsächlicher Änderung und wenn Pending-Spool vorhanden
+            if prev_tray_now is not None and tray_now_str != prev_tray_now and self._pending:
+                try:
+                    tray_now_int = int(tray_now)
+                    if tray_now_int == 254:
+                        pass  # Kein Tray aktiv
+                    else:
+                        if tray_now_int == 255:
+                            ams_id, tray_id = 255, 254
+                        else:
+                            ams_id = tray_now_int // 4
+                            tray_id = tray_now_int % 4
+                        logger.info(f"tray_now changed {prev_tray_now} -> {tray_now_str}: "
+                                   f"assigning pending spool {self._pending.spool_id} to slot {ams_id}-{tray_id}")
+                        self._send_filament_setting(ams_id, tray_id, self._pending.filament_data)
+                        if self._pending.timer and self._loop:
+                            self._loop.call_soon_threadsafe(self._pending.timer.cancel)
+                        self._pending = None
+                except (ValueError, TypeError) as e:
+                    logger.warning(f"Invalid tray_now value '{tray_now}': {e}")
+
         # Nur verarbeiten wenn AMS- oder vt_tray-Daten vorhanden
         if ams_section is None and vt_tray is None:
             return
 
         ams_data = (ams_section or {}).get("ams", [])
+
+        # Leichtgewichtige Nachricht (nur tray_now/version) — keine Slot-Daten vorhanden
+        if not ams_data and vt_tray is None:
+            return
 
         slots: list[dict[str, Any]] = []
 
@@ -196,16 +229,6 @@ class Driver(BaseDriver):
                     "present": present,
                 })
 
-                # Pending-Spool Match (nur bei belegtem Tray)
-                if present and self._pending and not self._pending.slot_index:
-                    logger.info(f"Pending match: slot {slot_index} has spool")
-                    self._send_filament_setting(ams_id, tray_id, self._pending.filament_data)
-                    if self._pending.timer and self._loop:
-                        self._loop.call_soon_threadsafe(self._pending.timer.cancel)
-                    self._pending = None
-
-                if not present and self._pending and self._pending.slot_index == slot_index:
-                    pass
 
         # Externe Spule (vt_tray) — immer auswerten wenn vorhanden
         has_external = vt_tray is not None
@@ -330,18 +353,20 @@ class Driver(BaseDriver):
         spool_id: int,
         filament_data: dict,
         slot_index: str | None = None,
+        timeout_seconds: int | None = None,
     ) -> None:
         """Spule für automatische Zuweisung vormerken."""
         if self._pending and self._pending.timer:
             self._pending.timer.cancel()
 
         self._pending = PendingSpool(spool_id, filament_data, slot_index)
-        self._pending.timer = asyncio.create_task(self._timeout_task())
-        logger.info(f"Pending spool {spool_id} for printer {self.printer_id} (slot: {slot_index})")
+        effective_timeout = timeout_seconds if timeout_seconds is not None else self._timeout_seconds
+        self._pending.timer = asyncio.create_task(self._timeout_task(effective_timeout))
+        logger.info(f"Pending spool {spool_id} for printer {self.printer_id} (slot: {slot_index}, timeout: {effective_timeout}s)")
 
-    async def _timeout_task(self) -> None:
+    async def _timeout_task(self, timeout: int | None = None) -> None:
         """Wartet auf Timeout, dann verwirft Pending."""
-        await asyncio.sleep(self._timeout_seconds)
+        await asyncio.sleep(timeout if timeout is not None else self._timeout_seconds)
         if self._pending:
             logger.info(f"Pending spool {self._pending.spool_id} timed out")
             self._pending = None
