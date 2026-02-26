@@ -273,10 +273,10 @@ class Driver(BaseDriver):
             return
 
         color = filament_data.get("color", "")
-        if len(color) == 8:
-            color = color[:6]  # Alpha-Kanal entfernen
-        elif len(color) != 6:
-            color = "FFFFFF"  # Default weiß
+        if len(color) == 6:
+            color = color + "FF"  # Alpha-Kanal hinzufügen (voll deckend)
+        elif len(color) != 8:
+            color = "FFFFFFFF"  # Default weiß + Alpha
 
         try:
             from bambulabs_api import AMSFilamentSettings
