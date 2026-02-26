@@ -299,6 +299,19 @@ class Driver(BaseDriver):
         except Exception as e:
             logger.error(f"Failed to send filament setting: {e}")
 
+    async def reconnect(self) -> None:
+        """Reconnect: MQTT stoppen und neu starten."""
+        logger.info(f"Reconnecting Bambu driver for printer {self.printer_id}")
+        if self._printer:
+            self._printer.mqtt_stop()
+            self._connected = False
+            self._slots_processed = False
+            self._printer.mqtt_start()
+            logger.info(f"Bambu driver reconnected for printer {self.printer_id}")
+
+    def send_filament_to_tray(self, ams_id: int, tray_id: int, filament_data: dict) -> None:
+        """Filament-Setting direkt an einen bestimmten Tray senden (ohne Pending-Mechanismus)."""
+        self._send_filament_setting(ams_id, tray_id, filament_data)
     # -- Pending-Spool API ----------------------------------------------------
 
     async def assign_pending_spool(
@@ -341,4 +354,5 @@ class Driver(BaseDriver):
             "slot_count": total_slots,
             "external_spool": ext_exists,
             "ams_units": self._current_ams_units,
+            "slots": self._current_slots,
         }
