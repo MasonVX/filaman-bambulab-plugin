@@ -34,7 +34,7 @@ class Driver(BaseDriver):
         super().__init__(printer_id, config, emitter)
         self._printer: Any = None  # bambulabs_api.Printer
         self._pending: PendingSpool | None = None
-        self._timeout_seconds = config.get("timeout_seconds", DEFAULT_TIMEOUT)
+        self._timeout_seconds = DEFAULT_TIMEOUT  # Can be overridden per assign_pending_spool call
         self._host = config.get("host", "")
         self._serial = config.get("serial", "")
         self._access_code = config.get("access_code", "")
@@ -46,7 +46,6 @@ class Driver(BaseDriver):
         self._is_ams_lite = self._printer_model in ("A1", "A1_MINI")
         self._loop: asyncio.AbstractEventLoop | None = None
         self._ams_serials: dict[str, str] = {}  # ams_id -> serial number
-        self._slots_processed = False  # Nur einmal pro Verbindung verarbeiten
 
     async def start(self) -> None:
         from bambulabs_api import Printer
@@ -82,6 +81,10 @@ class Driver(BaseDriver):
             self._pending.timer.cancel()
             self._pending = None
         if self._printer:
+            try:
+                self._printer.mqtt_client._client.disconnect()
+            except Exception:
+                pass
             self._printer.mqtt_stop()
             self._printer = None
         self._connected = False
@@ -97,7 +100,7 @@ class Driver(BaseDriver):
     def _on_disconnect(self, mqtt_client, client, userdata, disconnect_flags, rc, properties):
         """Wird im paho-Thread aufgerufen wenn MQTT getrennt wird."""
         self._connected = False
-        self._slots_processed = False
+        self._current_slots = []  # Force full re-sync on reconnect
         logger.warning(f"Bambu driver disconnected from printer {self.printer_id}: {rc}")
         self.log_debug("event", "mqtt", {"event": "disconnected", "rc": str(rc)})
         # paho auto-reconnect via loop_start() (reconnect_on_failure=True)
@@ -140,10 +143,11 @@ class Driver(BaseDriver):
 
     def _process_slots(self, payload: dict) -> None:
         """AMS/Tray-Daten aus push_status extrahieren und slots_update emittieren.
-        Wird nur einmal pro Verbindung verarbeitet — AMS-Konfiguration ändert sich
-        im laufenden Betrieb nicht."""
-        if self._slots_processed:
-            return
+        Wird bei jeder push_status Nachricht aufgerufen. Emittiert nur wenn sich
+        die Slot-Daten geändert haben, um unnötige DB-Writes zu vermeiden.
+
+        Auto-assignment nutzt ausschließlich Feld-Vergleich (wie C++ Referenz):
+        Erkennt Änderungen in tray_info_idx, tray_type, tray_color, cali_idx, setting_id."""
 
         print_data = payload.get("print", {})
         ams_section = print_data.get("ams")
@@ -154,6 +158,10 @@ class Driver(BaseDriver):
             return
 
         ams_data = (ams_section or {}).get("ams", [])
+
+        # Leichtgewichtige Nachricht (nur tray_now/version) — keine Slot-Daten vorhanden
+        if not ams_data and vt_tray is None:
+            return
 
         slots: list[dict[str, Any]] = []
 
@@ -199,16 +207,6 @@ class Driver(BaseDriver):
                     "present": present,
                 })
 
-                # Pending-Spool Match (nur bei belegtem Tray)
-                if present and self._pending and not self._pending.slot_index:
-                    logger.info(f"Pending match: slot {slot_index} has spool")
-                    self._send_filament_setting(ams_id, tray_id, self._pending.filament_data)
-                    if self._pending.timer and self._loop:
-                        self._loop.call_soon_threadsafe(self._pending.timer.cancel)
-                    self._pending = None
-
-                if not present and self._pending and self._pending.slot_index == slot_index:
-                    pass
 
         # Externe Spule (vt_tray) — immer auswerten wenn vorhanden
         has_external = vt_tray is not None
@@ -227,12 +225,54 @@ class Driver(BaseDriver):
                 "present": ext_has_filament,
             })
 
-            if ext_has_filament and self._pending and self._pending.slot_index == "255-254":
-                logger.info("Pending match: external tray has spool")
-                self._send_filament_setting(255, 254, self._pending.filament_data)
+
+        # -- Auto-assignment: Tray-Daten-Vergleich (wie C++ Implementierung) --
+        # Erkennt wenn sich Tray-Felder ändern (Spule eingelegt/gewechselt).
+        # Vergleicht tray_info_idx, tray_type, tray_color, cali_idx und setting_id
+        # gegen die zuletzt gespeicherten Slot-Daten.
+        if self._pending and self._current_slots:
+            _compare_fields = ("tray_info_idx", "tray_type", "tray_color", "cali_idx")
+            for new_slot in slots:
+                sid = new_slot.get("slot_index", "")
+                new_tray_type = new_slot.get("tray_type", "")
+                if not new_tray_type:
+                    continue  # Leerer Slot, kein Assignment möglich
+                # Passendes altes Slot finden
+                old_slot = next((s for s in self._current_slots if s.get("slot_index") == sid), None)
+                if old_slot is None:
+                    continue  # Kein Vergleich möglich (erster Sync)
+                # Wenn alter Slot leer war (tray_type war leer), setting_id zurücksetzen (wie C++)
+                if not old_slot.get("tray_type", ""):
+                    old_slot["setting_id"] = ""
+                # setting_id null → leerer String (wie C++: if (trayObj["setting_id"].isNull()) trayObj["setting_id"] = "")
+                new_setting_id = new_slot.get("setting_id") or ""
+                old_setting_id = old_slot.get("setting_id") or ""
+                # Prüfe ob sich relevante Felder geändert haben
+                has_changed = any(
+                    new_slot.get(f, "") != old_slot.get(f, "")
+                    for f in _compare_fields
+                )
+                # setting_id: nur vergleichen wenn neuer Wert nicht leer ist (wie C++)
+                if not has_changed and new_setting_id and new_setting_id != old_setting_id:
+                    has_changed = True
+                if not has_changed:
+                    continue
+                # Slot-Filter: wenn Pending einen bestimmten Slot will
+                if self._pending.slot_index is not None and self._pending.slot_index != sid:
+                    continue
+                # Parse ams_id und tray_id aus slot_index (z.B. "0-1" oder "255-254")
+                try:
+                    parts = sid.split("-")
+                    ams_id_parsed, tray_id_parsed = int(parts[0]), int(parts[1])
+                except (ValueError, IndexError):
+                    continue
+                logger.warning(f"Tray data changed at slot {sid}: "
+                           f"assigning pending spool {self._pending.spool_id}")
+                self._send_filament_setting(ams_id_parsed, tray_id_parsed, self._pending.filament_data)
                 if self._pending.timer and self._loop:
                     self._loop.call_soon_threadsafe(self._pending.timer.cancel)
                 self._pending = None
+                break  # Nur erste Änderung zuweisen
 
         # AMS/Slot Zusammenfassung
         total_slots = sum(u.get("tray_count", 0) for u in ams_units)
@@ -246,9 +286,15 @@ class Driver(BaseDriver):
             "ams_units": ams_units,
         }
 
+        # Nur emittieren wenn sich Slot-Daten geändert haben
+        if slots == self._current_slots:
+            # AMS-Units trotzdem aktualisieren (Temperatur/Humidity ändern sich)
+            self._current_ams_units = ams_units
+            return
+
         # Event an System melden (muss im asyncio-Thread passieren)
         self._current_slots = slots
-        self._slots_processed = True
+        logger.info(f"Slot data changed for printer {self.printer_id}, emitting slots_update")
         if self._loop:
             self._loop.call_soon_threadsafe(
                 self.emit,
@@ -274,7 +320,7 @@ class Driver(BaseDriver):
 
         color = filament_data.get("color", "")
         if len(color) == 8:
-            color = color[:6]  # Alpha-Kanal entfernen
+            color = color[:6]  # Alpha-Kanal entfernen, bambulabs_api erwartet 6 Zeichen
         elif len(color) != 6:
             color = "FFFFFF"  # Default weiß
 
@@ -294,11 +340,36 @@ class Driver(BaseDriver):
                 tray_id=tray_id if tray_id < 200 else 254,
             )
             self.log_debug("out", f"device/{self._serial}/request",
-                           {"command": "ams_filament_setting", "success": result})
+                           {"command": "ams_filament_setting",
+                            "ams_id": ams_id if ams_id < 200 else 255,
+                            "tray_id": tray_id if tray_id < 200 else 254,
+                            "tray_info_idx": filament_data.get("tray_info_idx", "GFL99"),
+                            "tray_color": f"{color.upper()}FF",
+                            "nozzle_temp_min": filament_data.get("nozzle_temp_min", 190),
+                            "nozzle_temp_max": filament_data.get("nozzle_temp_max", 230),
+                            "tray_type": filament_data.get("material_type", "PLA"),
+                            "success": result})
             logger.info(f"Sent filament setting to printer {self.printer_id}: slot {ams_id}-{tray_id}")
         except Exception as e:
             logger.error(f"Failed to send filament setting: {e}")
 
+    async def reconnect(self) -> None:
+        """Reconnect: MQTT stoppen und neu starten."""
+        logger.info(f"Reconnecting Bambu driver for printer {self.printer_id}")
+        if self._printer:
+            try:
+                self._printer.mqtt_client._client.disconnect()
+            except Exception:
+                pass
+            self._printer.mqtt_stop()
+            self._connected = False
+            self._current_slots = []  # Force full re-sync on reconnect
+            self._printer.mqtt_start()
+            logger.info(f"Bambu driver reconnected for printer {self.printer_id}")
+
+    def send_filament_to_tray(self, ams_id: int, tray_id: int, filament_data: dict) -> None:
+        """Filament-Setting direkt an einen bestimmten Tray senden (ohne Pending-Mechanismus)."""
+        self._send_filament_setting(ams_id, tray_id, filament_data)
     # -- Pending-Spool API ----------------------------------------------------
 
     async def assign_pending_spool(
@@ -306,18 +377,20 @@ class Driver(BaseDriver):
         spool_id: int,
         filament_data: dict,
         slot_index: str | None = None,
+        timeout_seconds: int | None = None,
     ) -> None:
         """Spule für automatische Zuweisung vormerken."""
         if self._pending and self._pending.timer:
             self._pending.timer.cancel()
 
         self._pending = PendingSpool(spool_id, filament_data, slot_index)
-        self._pending.timer = asyncio.create_task(self._timeout_task())
-        logger.info(f"Pending spool {spool_id} for printer {self.printer_id} (slot: {slot_index})")
+        effective_timeout = timeout_seconds if timeout_seconds is not None else self._timeout_seconds
+        self._pending.timer = asyncio.create_task(self._timeout_task(effective_timeout))
+        logger.info(f"Pending spool {spool_id} for printer {self.printer_id} (slot: {slot_index}, timeout: {effective_timeout}s)")
 
-    async def _timeout_task(self) -> None:
+    async def _timeout_task(self, timeout: int | None = None) -> None:
         """Wartet auf Timeout, dann verwirft Pending."""
-        await asyncio.sleep(self._timeout_seconds)
+        await asyncio.sleep(timeout if timeout is not None else self._timeout_seconds)
         if self._pending:
             logger.info(f"Pending spool {self._pending.spool_id} timed out")
             self._pending = None
@@ -341,4 +414,5 @@ class Driver(BaseDriver):
             "slot_count": total_slots,
             "external_spool": ext_exists,
             "ams_units": self._current_ams_units,
+            "slots": self._current_slots,
         }
