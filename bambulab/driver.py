@@ -151,33 +151,10 @@ class Driver(BaseDriver):
         ams_section = print_data.get("ams")
         vt_tray = print_data.get("vt_tray")
 
-        # tray_now: Erkennung wenn ein Tray gewechselt wird
+        # tray_now: nur noch tracken (wird für Health/Status gebraucht)
         tray_now = (ams_section or {}).get("tray_now")
         if tray_now is not None:
-            tray_now_str = str(tray_now)
-            prev_tray_now = self._current_tray_now
-            self._current_tray_now = tray_now_str
-
-            # Nur bei tatsächlicher Änderung und wenn Pending-Spool vorhanden
-            if prev_tray_now is not None and tray_now_str != prev_tray_now and self._pending:
-                try:
-                    tray_now_int = int(tray_now)
-                    if tray_now_int == 254:
-                        pass  # Kein Tray aktiv
-                    else:
-                        if tray_now_int == 255:
-                            ams_id, tray_id = 255, 254
-                        else:
-                            ams_id = tray_now_int // 4
-                            tray_id = tray_now_int % 4
-                        logger.info(f"tray_now changed {prev_tray_now} -> {tray_now_str}: "
-                                   f"assigning pending spool {self._pending.spool_id} to slot {ams_id}-{tray_id}")
-                        self._send_filament_setting(ams_id, tray_id, self._pending.filament_data)
-                        if self._pending.timer and self._loop:
-                            self._loop.call_soon_threadsafe(self._pending.timer.cancel)
-                        self._pending = None
-                except (ValueError, TypeError) as e:
-                    logger.warning(f"Invalid tray_now value '{tray_now}': {e}")
+            self._current_tray_now = str(tray_now)
 
         # Nur verarbeiten wenn AMS- oder vt_tray-Daten vorhanden
         if ams_section is None and vt_tray is None:
@@ -258,32 +235,42 @@ class Driver(BaseDriver):
                     self._loop.call_soon_threadsafe(self._pending.timer.cancel)
                 self._pending = None
 
-        # -- AMS tray insertion detection for auto-assignment --
+        # -- Auto-assignment: Tray-Daten-Vergleich (wie C++ Implementierung) --
+        # Erkennt wenn sich Tray-Felder ändern (Spule eingelegt/gewechselt)
         if self._pending and self._current_slots:
+            _compare_fields = ("tray_info_idx", "tray_type", "tray_color", "cali_idx")
             for new_slot in slots:
                 sid = new_slot.get("slot_index", "")
-                if not new_slot.get("present"):
-                    continue
-                # Find matching previous slot
+                new_tray_type = new_slot.get("tray_type", "")
+                if not new_tray_type:
+                    continue  # Leerer Slot, kein Assignment möglich
+                # Passendes altes Slot finden
                 old_slot = next((s for s in self._current_slots if s.get("slot_index") == sid), None)
-                if old_slot and old_slot.get("present"):
-                    continue  # Was already present, not a new insertion
-                # Slot went from empty/missing to present
+                if old_slot is None:
+                    continue  # Kein Vergleich möglich (erster Sync)
+                # Prüfe ob sich relevante Felder geändert haben
+                has_changed = any(
+                    new_slot.get(f, "") != old_slot.get(f, "")
+                    for f in _compare_fields
+                )
+                if not has_changed:
+                    continue
+                # Slot-Filter: wenn Pending einen bestimmten Slot will
                 if self._pending.slot_index is not None and self._pending.slot_index != sid:
-                    continue  # Pending targets a specific slot, this isn't it
-                # Parse ams_id and tray_id from slot_index (e.g. "0-1" or "255-254")
+                    continue
+                # Parse ams_id und tray_id aus slot_index (z.B. "0-1" oder "255-254")
                 try:
                     parts = sid.split("-")
                     ams_id_parsed, tray_id_parsed = int(parts[0]), int(parts[1])
                 except (ValueError, IndexError):
                     continue
-                logger.info(f"AMS tray insertion detected at slot {sid}: "
+                logger.info(f"Tray data changed at slot {sid}: "
                            f"assigning pending spool {self._pending.spool_id}")
                 self._send_filament_setting(ams_id_parsed, tray_id_parsed, self._pending.filament_data)
                 if self._pending.timer and self._loop:
                     self._loop.call_soon_threadsafe(self._pending.timer.cancel)
                 self._pending = None
-                break  # Only assign to first detected insertion
+                break  # Nur erste Änderung zuweisen
 
         # AMS/Slot Zusammenfassung
         total_slots = sum(u.get("tray_count", 0) for u in ams_units)
