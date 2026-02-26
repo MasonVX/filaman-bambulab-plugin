@@ -294,7 +294,15 @@ class Driver(BaseDriver):
                 tray_id=tray_id if tray_id < 200 else 254,
             )
             self.log_debug("out", f"device/{self._serial}/request",
-                           {"command": "ams_filament_setting", "success": result})
+                           {"command": "ams_filament_setting",
+                            "ams_id": ams_id if ams_id < 200 else 255,
+                            "tray_id": tray_id if tray_id < 200 else 254,
+                            "tray_info_idx": filament_data.get("tray_info_idx", "GFL99"),
+                            "tray_color": f"{color.upper()}FF",
+                            "nozzle_temp_min": filament_data.get("nozzle_temp_min", 190),
+                            "nozzle_temp_max": filament_data.get("nozzle_temp_max", 230),
+                            "tray_type": filament_data.get("material_type", "PLA"),
+                            "success": result})
             logger.info(f"Sent filament setting to printer {self.printer_id}: slot {ams_id}-{tray_id}")
         except Exception as e:
             logger.error(f"Failed to send filament setting: {e}")
