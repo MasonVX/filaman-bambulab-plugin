@@ -180,31 +180,34 @@ class Driver(BaseDriver):
                 slot_index = f"{ams_id}-{tray_id}"
                 tray_type = tray.get("tray_type", "")
 
-                if tray_type:
-                    if self._is_ams_lite:
-                        slot_name = f"AMS Lite - Slot {tray_id + 1}"
-                    else:
-                        slot_name = f"AMS {ams_id} - Slot {tray_id + 1}"
-                    slots.append({
-                        "slot_index": slot_index,
-                        "slot_name": slot_name,
-                        "tray_info_idx": tray.get("tray_info_idx", ""),
-                        "tray_type": tray_type,
-                        "tray_color": tray.get("tray_color", ""),
-                        "nozzle_temp_min": tray.get("nozzle_temp_min"),
-                        "nozzle_temp_max": tray.get("nozzle_temp_max"),
-                        "present": True,
-                    })
+                if self._is_ams_lite:
+                    slot_name = f"AMS Lite - Slot {tray_id + 1}"
+                else:
+                    slot_name = f"AMS {ams_id} - Slot {tray_id + 1}"
 
-                    # Pending-Spool Match
-                    if self._pending and not self._pending.slot_index:
-                        logger.info(f"Pending match: slot {slot_index} has spool")
-                        self._send_filament_setting(ams_id, tray_id, self._pending.filament_data)
-                        if self._pending.timer and self._loop:
-                            self._loop.call_soon_threadsafe(self._pending.timer.cancel)
-                        self._pending = None
+                present = bool(tray_type)
+                slots.append({
+                    "slot_index": slot_index,
+                    "slot_name": slot_name,
+                    "tray_info_idx": tray.get("tray_info_idx", ""),
+                    "tray_type": tray_type,
+                    "tray_color": tray.get("tray_color", ""),
+                    "nozzle_temp_min": tray.get("nozzle_temp_min"),
+                    "nozzle_temp_max": tray.get("nozzle_temp_max"),
+                    "setting_id": tray.get("setting_id", ""),
+                    "cali_idx": tray.get("cali_idx"),
+                    "present": present,
+                })
 
-                elif self._pending and self._pending.slot_index == slot_index:
+                # Pending-Spool Match (nur bei belegtem Tray)
+                if present and self._pending and not self._pending.slot_index:
+                    logger.info(f"Pending match: slot {slot_index} has spool")
+                    self._send_filament_setting(ams_id, tray_id, self._pending.filament_data)
+                    if self._pending.timer and self._loop:
+                        self._loop.call_soon_threadsafe(self._pending.timer.cancel)
+                    self._pending = None
+
+                if not present and self._pending and self._pending.slot_index == slot_index:
                     pass
 
         # Externe Spule (vt_tray) — immer auswerten wenn vorhanden
@@ -219,6 +222,8 @@ class Driver(BaseDriver):
                 "tray_color": vt_tray.get("tray_color", ""),
                 "nozzle_temp_min": vt_tray.get("nozzle_temp_min"),
                 "nozzle_temp_max": vt_tray.get("nozzle_temp_max"),
+                "setting_id": vt_tray.get("setting_id", ""),
+                "cali_idx": vt_tray.get("cali_idx"),
                 "present": ext_has_filament,
             })
 
