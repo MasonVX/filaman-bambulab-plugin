@@ -82,6 +82,10 @@ class Driver(BaseDriver):
             self._pending.timer.cancel()
             self._pending = None
         if self._printer:
+            try:
+                self._printer.mqtt_client._client.disconnect()
+            except Exception:
+                pass
             self._printer.mqtt_stop()
             self._printer = None
         self._connected = False
@@ -337,6 +341,10 @@ class Driver(BaseDriver):
         """Reconnect: MQTT stoppen und neu starten."""
         logger.info(f"Reconnecting Bambu driver for printer {self.printer_id}")
         if self._printer:
+            try:
+                self._printer.mqtt_client._client.disconnect()
+            except Exception:
+                pass
             self._printer.mqtt_stop()
             self._connected = False
             self._current_slots = []  # Force full re-sync on reconnect
