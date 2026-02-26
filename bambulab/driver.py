@@ -151,10 +151,35 @@ class Driver(BaseDriver):
         ams_section = print_data.get("ams")
         vt_tray = print_data.get("vt_tray")
 
-        # tray_now: nur noch tracken (wird für Health/Status gebraucht)
+        # tray_now/tray_pre: Insertion-Detection
         tray_now = (ams_section or {}).get("tray_now")
+        tray_pre = (ams_section or {}).get("tray_pre")
         if tray_now is not None:
             self._current_tray_now = str(tray_now)
+
+        # Insertion-Detection: tray_now == tray_pre bedeutet Spule eingelegt
+        if (tray_now is not None and tray_pre is not None
+                and str(tray_now) == str(tray_pre)
+                and self._pending):
+            try:
+                tray_now_int = int(tray_now)
+                if tray_now_int != 254:  # 254 = kein Tray aktiv
+                    if tray_now_int == 255:
+                        ams_id_ins, tray_id_ins = 255, 254
+                    else:
+                        ams_id_ins = tray_now_int // 4
+                        tray_id_ins = tray_now_int % 4
+                    slot_index_ins = f"{ams_id_ins}-{tray_id_ins}"
+                    # Slot-Filter: wenn Pending einen bestimmten Slot will
+                    if self._pending.slot_index is None or self._pending.slot_index == slot_index_ins:
+                        logger.info(f"Spool insertion detected (tray_now==tray_pre=={tray_now}): "
+                                   f"assigning pending spool {self._pending.spool_id} to slot {slot_index_ins}")
+                        self._send_filament_setting(ams_id_ins, tray_id_ins, self._pending.filament_data)
+                        if self._pending.timer and self._loop:
+                            self._loop.call_soon_threadsafe(self._pending.timer.cancel)
+                        self._pending = None
+            except (ValueError, TypeError) as e:
+                logger.warning(f"Invalid tray_now value '{tray_now}': {e}")
 
         # Nur verarbeiten wenn AMS- oder vt_tray-Daten vorhanden
         if ams_section is None and vt_tray is None:
