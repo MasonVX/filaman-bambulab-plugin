@@ -3,7 +3,7 @@
   "name": "Bambu Lab",
   "driver_key": "bambulab",
   "plugin_type": "driver",
-  "version": "2.2.0",
+  "version": "2.2.1",
   "description": "Bambu Lab printer driver via bambulabs_api. Supports AMS, RFID and automatic filament matching.",
   "author": "FilaMan",
   "homepage": "https://filaman.dev",

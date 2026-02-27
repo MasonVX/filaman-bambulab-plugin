@@ -146,6 +146,10 @@ class Driver(BaseDriver):
         Wird bei jeder push_status Nachricht aufgerufen. Emittiert nur wenn sich
         die Slot-Daten geändert haben, um unnötige DB-Writes zu vermeiden.
 
+        Merge-Strategie: Nur Slot-Kategorien aktualisieren, die in der aktuellen
+        Nachricht vorhanden sind. Fehlende Kategorien behalten ihren vorherigen Zustand.
+        BambuLab sendet nicht immer alle Daten in jeder push_status Nachricht.
+
         Auto-assignment nutzt ausschließlich Feld-Vergleich (wie C++ Referenz):
         Erkennt Änderungen in tray_info_idx, tray_type, tray_color, cali_idx, setting_id."""
 
@@ -163,56 +167,65 @@ class Driver(BaseDriver):
         if not ams_data and vt_tray is None:
             return
 
-        slots: list[dict[str, Any]] = []
+        # -- Merge-Strategie: vorherige Slots als Basis, nur vorhandene Daten aktualisieren --
+        # BambuLab sendet nicht immer ams UND vt_tray in jeder push_status Nachricht.
+        # Ohne Merge würde das Fehlen einer Kategorie deren Slots löschen (Flicker).
+        prev_ams_slots = [s for s in self._current_slots if not s.get("slot_index", "").startswith("255-")]
+        prev_ext_slots = [s for s in self._current_slots if s.get("slot_index", "").startswith("255-")]
 
-        # AMS-Einheiten Metadaten
-        ams_units: list[dict[str, Any]] = []
-        for ams_unit in ams_data:
-            ams_id = int(ams_unit.get("id", 0))
-            ams_units.append({
-                "ams_id": ams_id,
-                "humidity": ams_unit.get("humidity"),
-                "temp": ams_unit.get("temp"),
-                "tray_count": len(ams_unit.get("tray", [])),
-                "serial": self._ams_serials.get(str(ams_id), None),
-            })
-        self._current_ams_units = ams_units
-
-        # AMS-Trays verarbeiten
-        for ams_unit in ams_data:
-            ams_id = int(ams_unit.get("id", 0))
-            trays = ams_unit.get("tray", [])
-
-            for tray in trays:
-                tray_id = int(tray.get("id", 0))
-                slot_index = f"{ams_id}-{tray_id}"
-                tray_type = tray.get("tray_type", "")
-
-                if self._is_ams_lite:
-                    slot_name = f"AMS Lite - Slot {tray_id + 1}"
-                else:
-                    slot_name = f"AMS {ams_id + 1} - Slot {tray_id + 1}"
-
-                present = bool(tray_type)
-                slots.append({
-                    "slot_index": slot_index,
-                    "slot_name": slot_name,
-                    "tray_info_idx": tray.get("tray_info_idx", ""),
-                    "tray_type": tray_type,
-                    "tray_color": tray.get("tray_color", ""),
-                    "nozzle_temp_min": tray.get("nozzle_temp_min"),
-                    "nozzle_temp_max": tray.get("nozzle_temp_max"),
-                    "setting_id": tray.get("setting_id", ""),
-                    "cali_idx": tray.get("cali_idx"),
-                    "present": present,
+        # AMS-Einheiten Metadaten — nur aktualisieren wenn AMS-Daten vorhanden
+        if ams_data:
+            ams_units: list[dict[str, Any]] = []
+            for ams_unit in ams_data:
+                ams_id = int(ams_unit.get("id", 0))
+                ams_units.append({
+                    "ams_id": ams_id,
+                    "humidity": ams_unit.get("humidity"),
+                    "temp": ams_unit.get("temp"),
+                    "tray_count": len(ams_unit.get("tray", [])),
+                    "serial": self._ams_serials.get(str(ams_id), None),
                 })
+            self._current_ams_units = ams_units
+        else:
+            ams_units = list(self._current_ams_units)
 
+        # AMS-Trays: nur aktualisieren wenn ams_data vorhanden, sonst vorherige beibehalten
+        if ams_data:
+            ams_slots: list[dict[str, Any]] = []
+            for ams_unit in ams_data:
+                ams_id = int(ams_unit.get("id", 0))
+                trays = ams_unit.get("tray", [])
 
-        # Externe Spule (vt_tray) — immer auswerten wenn vorhanden
-        has_external = vt_tray is not None
-        if has_external:
+                for tray in trays:
+                    tray_id = int(tray.get("id", 0))
+                    slot_index = f"{ams_id}-{tray_id}"
+                    tray_type = tray.get("tray_type", "")
+
+                    if self._is_ams_lite:
+                        slot_name = f"AMS Lite - Slot {tray_id + 1}"
+                    else:
+                        slot_name = f"AMS {ams_id + 1} - Slot {tray_id + 1}"
+
+                    present = bool(tray_type)
+                    ams_slots.append({
+                        "slot_index": slot_index,
+                        "slot_name": slot_name,
+                        "tray_info_idx": tray.get("tray_info_idx", ""),
+                        "tray_type": tray_type,
+                        "tray_color": tray.get("tray_color", ""),
+                        "nozzle_temp_min": tray.get("nozzle_temp_min"),
+                        "nozzle_temp_max": tray.get("nozzle_temp_max"),
+                        "setting_id": tray.get("setting_id", ""),
+                        "cali_idx": tray.get("cali_idx"),
+                        "present": present,
+                    })
+        else:
+            ams_slots = prev_ams_slots
+
+        # Externe Spule: nur aktualisieren wenn vt_tray vorhanden, sonst vorherige beibehalten
+        if vt_tray is not None:
             ext_has_filament = bool(vt_tray.get("tray_type"))
-            slots.append({
+            ext_slots = [{
                 "slot_index": "255-254",
                 "slot_name": "External Tray",
                 "tray_info_idx": vt_tray.get("tray_info_idx", ""),
@@ -223,13 +236,20 @@ class Driver(BaseDriver):
                 "setting_id": vt_tray.get("setting_id", ""),
                 "cali_idx": vt_tray.get("cali_idx"),
                 "present": ext_has_filament,
-            })
+            }]
+        else:
+            ext_slots = prev_ext_slots
+
+        # Zusammenführen: AMS-Slots + External Slot
+        slots = ams_slots + ext_slots
+        has_external = len(ext_slots) > 0
 
 
         # -- Auto-assignment: Tray-Daten-Vergleich (wie C++ Implementierung) --
         # Erkennt wenn sich Tray-Felder ändern (Spule eingelegt/gewechselt).
         # Vergleicht tray_info_idx, tray_type, tray_color, cali_idx und setting_id
         # gegen die zuletzt gespeicherten Slot-Daten.
+        # Beibehaltene (unveränderte) Slots matchen ihre Vorgänger → kein false positive.
         if self._pending and self._current_slots:
             _compare_fields = ("tray_info_idx", "tray_type", "tray_color", "cali_idx")
             for new_slot in slots:
@@ -288,8 +308,6 @@ class Driver(BaseDriver):
 
         # Nur emittieren wenn sich Slot-Daten geändert haben
         if slots == self._current_slots:
-            # AMS-Units trotzdem aktualisieren (Temperatur/Humidity ändern sich)
-            self._current_ams_units = ams_units
             return
 
         # Event an System melden (muss im asyncio-Thread passieren)
