@@ -69,6 +69,7 @@ local_cache
 .sisyphus/
 releases
 *.zip
+.opencode
 
 # Installed plugins (only spoolman_import ships as default)
 backend/app/plugins/*/
