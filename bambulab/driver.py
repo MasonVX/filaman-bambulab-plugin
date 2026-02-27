@@ -180,7 +180,7 @@ class Driver(BaseDriver):
                 ams_id = int(ams_unit.get("id", 0))
                 ams_units.append({
                     "ams_id": ams_id,
-                    "humidity": ams_unit.get("humidity"),
+                    "humidity": ams_unit.get("humidity_raw", ams_unit.get("humidity")),
                     "temp": ams_unit.get("temp"),
                     "tray_count": len(ams_unit.get("tray", [])),
                     "serial": self._ams_serials.get(str(ams_id), None),
