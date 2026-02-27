@@ -70,6 +70,7 @@ local_cache
 releases
 *.zip
 .opencode
+bump.sh
 
 # Installed plugins (only spoolman_import ships as default)
 backend/app/plugins/*/
