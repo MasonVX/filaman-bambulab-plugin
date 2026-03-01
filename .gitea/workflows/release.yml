@@ -12,16 +12,21 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Find and release plugins
+      - name: SSH-Deploy
         env:
-          GITEA_TOKEN: ${{ secrets.PACKAGES_TOKEN }}
-          GITEA_URL: ${{ github.server_url }}
-          OWNER: ${{ github.repository_owner }}
-          PACKAGE_NAME: filaman-bambulab-plugin
+          SSH_PRIVATE_KEY: ${{ secrets.FILAMAN_SSH_PRIVATE_KEY }}
+          SSH_HOST: ${{ secrets.FILAMAN_SSH_HOST }}
+          SSH_USER: ${{ secrets.FILAMAN_SSH_USER }}
+          SSH_PATH: ${{ secrets.FILAMAN_SSH_PLUGIN_PATH }}
         run: |
           set -euo pipefail
 
-          # Alle Plugin-Ordner mit plugin.json finden
+          # SSH-Key einrichten
+          mkdir -p ~/.ssh
+          echo "$SSH_PRIVATE_KEY" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H "$SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
           for PLUGIN_JSON in $(find . -maxdepth 2 -name "plugin.json" -not -path "./.git/*"); do
             PLUGIN_DIR=$(dirname "$PLUGIN_JSON")
             FOLDER_NAME=$(basename "$PLUGIN_DIR")
@@ -37,22 +42,13 @@ jobs:
             echo "📦 Erstelle $ZIP_NAME ..."
             zip -r "$ZIP_NAME" "$FOLDER_NAME" -x "$FOLDER_NAME/__pycache__/*" "$FOLDER_NAME/*.pyc"
 
-            echo "📤 Upload $ZIP_NAME als Gitea Package ..."
-            HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
-              -X PUT \
-              -H "Authorization: token ${GITEA_TOKEN}" \
-              -H "Content-Type: application/zip" \
-              --data-binary "@${ZIP_NAME}" \
-              "${GITEA_URL}/api/packages/${OWNER}/generic/${PACKAGE_NAME}/${VERSION}/${ZIP_NAME}")
+            echo "📤 Upload $ZIP_NAME per SCP ..."
+            scp -o StrictHostKeyChecking=no "$ZIP_NAME" "${SSH_USER}@${SSH_HOST}:${SSH_PATH}/${ZIP_NAME}"
 
-            if [ "$HTTP_STATUS" = "201" ]; then
-              echo "✅ ${PACKAGE_NAME}/${VERSION}/${ZIP_NAME} hochgeladen."
-            elif [ "$HTTP_STATUS" = "409" ]; then
-              echo "⚠️  ${PACKAGE_NAME}/${VERSION} existiert bereits. Überspringe."
-            else
-              echo "❌ Upload fehlgeschlagen (HTTP $HTTP_STATUS)."
-              exit 1
-            fi
+            echo "✅ $ZIP_NAME auf ${SSH_HOST}:${SSH_PATH}/ hochgeladen."
           done
+
+          # Aufräumen
+          rm -f ~/.ssh/id_rsa
 
           echo "🎉 Fertig!"
