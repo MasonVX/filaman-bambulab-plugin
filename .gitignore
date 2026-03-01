@@ -72,6 +72,7 @@ releases
 *.zip
 .opencode
 bump.sh
+AGENTS.md
 
 # Installed plugins (only spoolman_import ships as default)
 backend/app/plugins/*/

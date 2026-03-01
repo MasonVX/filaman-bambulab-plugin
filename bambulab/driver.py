@@ -25,6 +25,11 @@ class PendingSpool:
 class Driver(BaseDriver):
     driver_key = "bambulab"
 
+    # NOTE: Sending filament settings (spool assignment) requires the printer to be
+    # in LAN-only mode with Developer Mode enabled. Without these settings, only
+    # reading (AMS status, slot data) is possible. This is a Bambu Lab restriction —
+    # unsigned control commands are rejected by the printer firmware.
+
     def __init__(
         self,
         printer_id: int,

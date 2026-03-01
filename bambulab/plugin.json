@@ -4,7 +4,7 @@
   "driver_key": "bambulab",
   "plugin_type": "driver",
   "version": "2.3.2",
-  "description": "Bambu Lab printer driver via bambulabs_api. Supports AMS, RFID and automatic filament matching.",
+  "description": "Bambu Lab printer driver via bambulabs_api. Supports AMS, RFID and automatic filament matching. Note: Sending filament settings (spool assignment) requires LAN-only mode AND Developer Mode enabled on the printer. Without these settings, only reading is possible due to Bambu Lab restrictions.",
   "author": "FilaMan",
   "homepage": "https://www.filaman.app",
   "dependencies": ["bambulabs_api>=2.6.0"],
