@@ -64,6 +64,7 @@ coverage/
 *.db
 spec
 bump-version.sh
+getBambuIDX.sh
 _*
 !__*
 local_cache
