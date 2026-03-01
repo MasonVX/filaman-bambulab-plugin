@@ -65,6 +65,7 @@ coverage/
 spec
 bump-version.sh
 _*
+!__*
 local_cache
 .sisyphus/
 releases
