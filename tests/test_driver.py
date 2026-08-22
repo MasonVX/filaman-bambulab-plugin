@@ -215,7 +215,7 @@ class PluginPageTests(unittest.TestCase):
         plugin_dir = Path(__file__).resolve().parents[1] / "bambulab"
         manifest = json.loads((plugin_dir / "plugin.json").read_text())
 
-        self.assertEqual(manifest["version"], "2.7.2")
+        self.assertEqual(manifest["version"], "2.7.3")
         self.assertEqual(manifest["page_url"], "/plugin-page/bambulab")
         self.assertTrue(manifest["show_in_nav"])
         self.assertTrue((plugin_dir / "page.html").is_file())
