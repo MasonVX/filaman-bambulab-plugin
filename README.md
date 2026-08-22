@@ -29,6 +29,19 @@ The recommended installation method is to upload the release ZIP through FilaMan
 
 For a manual installation, copy the complete `bambulab/` folder into the FilaMan plugins directory and restart FilaMan. Do not copy only the individual files from inside that folder.
 
+## Code Structure
+
+The Python implementation is split by responsibility while keeping `driver.py` as FilaMan's required entry point:
+
+- `driver.py` coordinates lifecycle, MQTT callbacks, printer commands and the public driver API.
+- `slots.py` normalizes identifiers and parses AMS, AMS Lite, AMS HT and external tray payloads.
+- `spool_sync.py` owns safe filament matching, RFID spool upserts, remaining weight and managed locations.
+- `catalog.py` resolves and stores Bambu product image metadata without downloading image binaries into FilaMan.
+- `catalog_enrichment.py` coordinates event-driven and periodic inventory image scans across driver instances.
+- `state.py` contains the small runtime state objects shared by the driver modules.
+
+Every module, class and function contains a short docstring explaining its role. The separation is intentionally internal: FilaMan still loads `bambulab.driver.Driver`, and the plugin manifest and runtime API remain unchanged.
+
 ## Configuration
 
 Create a new printer in the FilaMan admin panel and select **Bambu Lab** as driver. The following fields are required:

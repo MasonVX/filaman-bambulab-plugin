@@ -1,4 +1,4 @@
-import importlib.util
+import importlib
 import asyncio
 import json
 import unittest
@@ -13,11 +13,10 @@ from app.models.printer_params import FilamentPrinterParam
 from app.models.spool import Spool, SpoolStatus
 
 
-DRIVER_PATH = Path(__file__).resolve().parents[1] / "bambulab" / "driver.py"
-SPEC = importlib.util.spec_from_file_location("bambulab_driver_under_test", DRIVER_PATH)
-assert SPEC and SPEC.loader
-DRIVER_MODULE = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(DRIVER_MODULE)
+DRIVER_MODULE = importlib.import_module("bambulab.driver")
+CATALOG_MODULE = importlib.import_module("bambulab.catalog")
+ENRICHMENT_MODULE = importlib.import_module("bambulab.catalog_enrichment")
+SPOOL_SYNC_MODULE = importlib.import_module("bambulab.spool_sync")
 Driver = DRIVER_MODULE.Driver
 
 
@@ -251,21 +250,39 @@ class PluginPageTests(unittest.TestCase):
         self.assertIn('data-i18n="page.title"', page)
 
 
+class ModuleLayoutTests(unittest.TestCase):
+    """Protect the responsibility boundaries of the split driver package."""
+
+    def test_driver_delegates_feature_areas_to_focused_modules(self):
+        self.assertEqual(Driver.__module__, "bambulab.driver")
+        self.assertEqual(Driver._process_slots.__module__, "bambulab.slots")
+        self.assertEqual(
+            Driver._auto_import_rfid_spools.__module__, "bambulab.spool_sync"
+        )
+        self.assertEqual(
+            Driver._cache_shop_image_for_filament.__module__, "bambulab.catalog"
+        )
+        self.assertEqual(
+            Driver._register_inventory_enrichment.__module__,
+            "bambulab.catalog_enrichment",
+        )
+
+
 class InventoryEnrichmentCoordinatorTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.original_debounce = (
-            DRIVER_MODULE.INVENTORY_IMAGE_EVENT_DEBOUNCE_SECONDS
+            ENRICHMENT_MODULE.INVENTORY_IMAGE_EVENT_DEBOUNCE_SECONDS
         )
-        self.original_interval = DRIVER_MODULE.INVENTORY_IMAGE_SCAN_SECONDS
-        DRIVER_MODULE.INVENTORY_IMAGE_EVENT_DEBOUNCE_SECONDS = 0.01
-        DRIVER_MODULE.INVENTORY_IMAGE_SCAN_SECONDS = 60
+        self.original_interval = ENRICHMENT_MODULE.INVENTORY_IMAGE_SCAN_SECONDS
+        ENRICHMENT_MODULE.INVENTORY_IMAGE_EVENT_DEBOUNCE_SECONDS = 0.01
+        ENRICHMENT_MODULE.INVENTORY_IMAGE_SCAN_SECONDS = 60
         self.drivers = []
 
     async def asyncTearDown(self):
         for driver in list(Driver._inventory_enrichment_instances):
             await driver._unregister_inventory_enrichment()
-        DRIVER_MODULE.INVENTORY_IMAGE_EVENT_DEBOUNCE_SECONDS = self.original_debounce
-        DRIVER_MODULE.INVENTORY_IMAGE_SCAN_SECONDS = self.original_interval
+        ENRICHMENT_MODULE.INVENTORY_IMAGE_EVENT_DEBOUNCE_SECONDS = self.original_debounce
+        ENRICHMENT_MODULE.INVENTORY_IMAGE_SCAN_SECONDS = self.original_interval
 
     async def _wait_for(self, predicate, timeout=1.0):
         deadline = asyncio.get_running_loop().time() + timeout
@@ -300,12 +317,12 @@ class InventoryEnrichmentCoordinatorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(Driver._inventory_enrichment_instances), 2)
 
         calls.clear()
-        await DRIVER_MODULE.event_bus.publish({"event": "locations_changed"})
+        await ENRICHMENT_MODULE.event_bus.publish({"event": "locations_changed"})
         await asyncio.sleep(0.05)
         self.assertEqual(calls, [])
 
-        await DRIVER_MODULE.event_bus.publish({"event": "spools_changed"})
-        await DRIVER_MODULE.event_bus.publish({"event": "filaments_changed"})
+        await ENRICHMENT_MODULE.event_bus.publish({"event": "spools_changed"})
+        await ENRICHMENT_MODULE.event_bus.publish({"event": "filaments_changed"})
         await self._wait_for(lambda: len(calls) == 1)
         await asyncio.sleep(0.05)
         self.assertEqual(calls, [1])
@@ -465,8 +482,14 @@ class AutoImportDatabaseTests(unittest.IsolatedAsyncioTestCase):
         async with self.engine.begin() as connection:
             await connection.run_sync(Base.metadata.create_all)
         self.sessions = async_sessionmaker(self.engine, expire_on_commit=False)
-        self.original_session_maker = DRIVER_MODULE.async_session_maker
-        DRIVER_MODULE.async_session_maker = self.sessions
+        self.original_session_makers = {
+            DRIVER_MODULE: DRIVER_MODULE.async_session_maker,
+            CATALOG_MODULE: CATALOG_MODULE.async_session_maker,
+            ENRICHMENT_MODULE: ENRICHMENT_MODULE.async_session_maker,
+            SPOOL_SYNC_MODULE: SPOOL_SYNC_MODULE.async_session_maker,
+        }
+        for module in self.original_session_makers:
+            module.async_session_maker = self.sessions
 
         self.driver, self.events = make_driver(auto_import_spools=True)
         self.driver._loop = asyncio.get_running_loop()
@@ -537,7 +560,8 @@ class AutoImportDatabaseTests(unittest.IsolatedAsyncioTestCase):
             await db.commit()
 
     async def asyncTearDown(self):
-        DRIVER_MODULE.async_session_maker = self.original_session_maker
+        for module, session_maker in self.original_session_makers.items():
+            module.async_session_maker = session_maker
         await self.engine.dispose()
 
     async def test_import_is_idempotent_and_keeps_custom_rfid_free(self):
@@ -556,11 +580,11 @@ class AutoImportDatabaseTests(unittest.IsolatedAsyncioTestCase):
             "bambulab:AABBCCDDEEFF0011AABBCCDDEEFF0011",
         )
         self.assertEqual(
-            spool.custom_fields[DRIVER_MODULE.BAMBU_RFID_TAG_1_FIELD],
+            spool.custom_fields[SPOOL_SYNC_MODULE.BAMBU_RFID_TAG_1_FIELD],
             "A1B2C3D4E5F60102",
         )
         self.assertNotIn(
-            DRIVER_MODULE.BAMBU_RFID_TAG_2_FIELD, spool.custom_fields
+            SPOOL_SYNC_MODULE.BAMBU_RFID_TAG_2_FIELD, spool.custom_fields
         )
         self.assertIsNone(spool.rfid_uid)
         self.assertEqual(spool.remaining_weight_g, 750)
@@ -580,7 +604,7 @@ class AutoImportDatabaseTests(unittest.IsolatedAsyncioTestCase):
             "bambulab:AABBCCDDEEFF0011AABBCCDDEEFF0011",
         )
         self.assertNotIn(
-            DRIVER_MODULE.BAMBU_RFID_TAG_1_FIELD, spool.custom_fields
+            SPOOL_SYNC_MODULE.BAMBU_RFID_TAG_1_FIELD, spool.custom_fields
         )
 
     async def test_physical_tag_uid_is_not_used_as_spool_identity(self):
@@ -662,20 +686,20 @@ class AutoImportDatabaseTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(metadata["shop_image_url"], expected_image)
         self.assertEqual(
-            filament.custom_fields[DRIVER_MODULE.BAMBU_SHOP_IMAGE_URL_FIELD],
+            filament.custom_fields[CATALOG_MODULE.BAMBU_SHOP_IMAGE_URL_FIELD],
             expected_image,
         )
         self.assertEqual(
-            filament.custom_fields[DRIVER_MODULE.FILAMENT_IMAGE_URL_FIELD],
+            filament.custom_fields[CATALOG_MODULE.FILAMENT_IMAGE_URL_FIELD],
             expected_image,
         )
         self.assertEqual(
-            filament.custom_fields[DRIVER_MODULE.FILAMENT_IMAGE_PROVIDER_FIELD],
+            filament.custom_fields[CATALOG_MODULE.FILAMENT_IMAGE_PROVIDER_FIELD],
             "bambulab",
         )
         self.assertTrue(
             all(
-                DRIVER_MODULE.BAMBU_SHOP_IMAGE_URL_FIELD not in (fields or {})
+                CATALOG_MODULE.BAMBU_SHOP_IMAGE_URL_FIELD not in (fields or {})
                 for fields in spool_custom_fields
             )
         )
@@ -711,7 +735,7 @@ class AutoImportDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(metadata["shop_image_url"], expected_image)
         self.assertEqual(filament.shop_url, expected_source)
         self.assertEqual(
-            filament.custom_fields[DRIVER_MODULE.FILAMENT_IMAGE_URL_FIELD],
+            filament.custom_fields[CATALOG_MODULE.FILAMENT_IMAGE_URL_FIELD],
             expected_image,
         )
 
@@ -731,9 +755,9 @@ class AutoImportDatabaseTests(unittest.IsolatedAsyncioTestCase):
                 "bambu_variant_id": "A19-W00",
                 "bambu_color_code": "17100",
                 "bambu_detailed_filament_type": "PLA Pure",
-                DRIVER_MODULE.FILAMENT_IMAGE_URL_FIELD: palette_image,
-                DRIVER_MODULE.BAMBU_SHOP_IMAGE_URL_FIELD: palette_image,
-                DRIVER_MODULE.FILAMENT_IMAGE_CHECKED_AT_FIELD: (
+                CATALOG_MODULE.FILAMENT_IMAGE_URL_FIELD: palette_image,
+                CATALOG_MODULE.BAMBU_SHOP_IMAGE_URL_FIELD: palette_image,
+                CATALOG_MODULE.FILAMENT_IMAGE_CHECKED_AT_FIELD: (
                     "2026-08-09T10:00:00+00:00"
                 ),
             }
@@ -774,18 +798,18 @@ class AutoImportDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(metadata["bambu_product_code"], "17100")
         self.assertEqual(metadata["shop_image_url"], expected_image)
         self.assertEqual(
-            filament.custom_fields[DRIVER_MODULE.FILAMENT_IMAGE_URL_FIELD],
+            filament.custom_fields[CATALOG_MODULE.FILAMENT_IMAGE_URL_FIELD],
             expected_image,
         )
         self.assertEqual(
-            filament.custom_fields[DRIVER_MODULE.FILAMENT_IMAGE_SOURCE_URL_FIELD],
+            filament.custom_fields[CATALOG_MODULE.FILAMENT_IMAGE_SOURCE_URL_FIELD],
             expected_source,
         )
         self.assertEqual(
             filament.custom_fields[
-                DRIVER_MODULE.BAMBU_IMAGE_RESOLVER_VERSION_FIELD
+                CATALOG_MODULE.BAMBU_IMAGE_RESOLVER_VERSION_FIELD
             ],
-            DRIVER_MODULE.STORE_SEARCH_RESOLVER_VERSION,
+            CATALOG_MODULE.STORE_SEARCH_RESOLVER_VERSION,
         )
 
     async def test_inventory_scan_resolves_only_bambu_filaments_with_spools(self):
@@ -831,7 +855,7 @@ class AutoImportDatabaseTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(stats, {"filaments": 1, "images": 1})
         self.assertEqual(
-            cached.custom_fields[DRIVER_MODULE.FILAMENT_IMAGE_PROVIDER_FIELD],
+            cached.custom_fields[CATALOG_MODULE.FILAMENT_IMAGE_PROVIDER_FIELD],
             "bambulab",
         )
         self.assertIsNone(unopened.custom_fields)
