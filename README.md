@@ -125,6 +125,10 @@ The plugin registers the following per-printer parameters for filaments and spoo
 
 Parameters can be set at filament level (shared across spools) or overridden per individual spool.
 
+## AI-Assisted Development
+
+This plugin has been developed with the assistance of generative AI tools, including OpenAI Codex. AI assistance has been used for parts of the implementation, refactoring, testing, debugging and documentation. The project is not presented as exclusively human-written; its human maintainers remain responsible for reviewing, accepting and publishing all changes.
+
 ## License
 
 See the [FilaMan](https://github.com/Fire-Devils/FilaMan) project for license information.
