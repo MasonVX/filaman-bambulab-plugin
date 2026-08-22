@@ -3,10 +3,12 @@
   "name": "Bambu Lab",
   "driver_key": "bambulab",
   "plugin_type": "driver",
-  "version": "2.3.4",
-  "description": "Bambu Lab printer driver via bambulabs_api. Supports AMS, RFID and automatic filament matching. Note: Sending filament settings (spool assignment) requires LAN-only mode AND Developer Mode enabled on the printer. Without these settings, only reading is possible due to Bambu Lab restrictions.",
+  "version": "2.7.2",
+  "description": "Bambu Lab printer driver via bambulabs_api with AMS and all-spool gallery views, optional catalog images, RFID spool discovery and automatic filament matching. Note: Sending filament settings (spool assignment) requires LAN-only mode AND Developer Mode enabled on the printer. Read-only mode never sends state-changing MQTT commands.",
   "author": "FilaMan",
   "homepage": "https://www.filaman.app",
+  "page_url": "/plugin-page/bambulab",
+  "show_in_nav": true,
   "dependencies": ["bambulabs_api>=2.6.0"],
   "config_schema": {
     "type": "object",
@@ -34,9 +36,27 @@
         "title": "Access Code",
         "description": "Printer access code"
       },
+      "read_only": {
+        "type": "boolean",
+        "title": "Read-only Mode",
+        "description": "Read printer and AMS status, but never send state-changing commands to the printer",
+        "default": false
+      },
+      "auto_import_spools": {
+        "type": "boolean",
+        "title": "Automatically Import Bambu RFID Spools",
+        "description": "Create unknown Bambu RFID spools from existing filaments and keep their estimated remaining weight synchronized",
+        "default": false
+      },
+      "resolve_shop_images": {
+        "type": "boolean",
+        "title": "Catalog Images (Bambu Lab)",
+        "description": "Resolve color-specific images through Bambu Lab's EU Store Search API, with a product-page fallback, and store only their URLs on the matching FilaMan filament. Browsers load enabled images directly from Bambu Lab's CDN; no image files are stored locally.",
+        "default": false
+      },
       "reconnect_interval_minutes": {
         "type": "integer",
-        "title": "Reconnect Interval (Minuten)",
+        "title": "Reconnect Interval (Minutes)",
         "description": "Interval in minutes between reconnection attempts on connection loss",
         "default": 5,
         "minimum": 1,

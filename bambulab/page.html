@@ -1,0 +1,825 @@
+<!doctype html>
+<html lang="en" data-theme="brand">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" type="image/png" href="/favicon.png">
+  <title>Spool overview · FilaMan</title>
+  <script>
+    (() => {
+      document.documentElement.dataset.theme = localStorage.getItem('theme') || 'brand';
+      const language = (localStorage.getItem('lang') || navigator.language || 'en').toLowerCase().split('-')[0];
+      document.documentElement.lang = language === 'de' ? 'de' : 'en';
+    })();
+  </script>
+  <style>
+    :root {
+      --font-sans: "Space Grotesk", "Segoe UI", system-ui, sans-serif;
+    }
+
+    html[data-theme="brand"] {
+      color-scheme: dark;
+      --bg: #0c1612;
+      --bg-elevated: #13261d;
+      --bg-soft: #183225;
+      --surface: rgba(19, 38, 29, .94);
+      --surface-strong: #13261d;
+      --surface-muted: #183225;
+      --text: #e9f3ec;
+      --muted: #b5c7bd;
+      --text-muted: #b5c7bd;
+      --border: rgba(255, 255, 255, .08);
+      --accent: #4ee3a2;
+      --accent-strong: #6cc6ff;
+      --accent-soft: rgba(78, 227, 162, .15);
+      --warning: #b66a00;
+      --danger: #ff8686;
+      --shadow: 0 18px 50px rgba(22, 50, 35, .09);
+      --radius: 20px;
+      --gradient-hero: radial-gradient(circle at 20% 20%, rgba(78, 227, 162, .25), transparent 60%), radial-gradient(circle at 80% 0%, rgba(108, 198, 255, .18), transparent 55%), linear-gradient(140deg, #0c1612 0%, #12251b 45%, #0b1410 100%);
+    }
+
+    html[data-theme="light"] {
+      color-scheme: light;
+      --bg: #f8f6f1;
+      --bg-elevated: #fff;
+      --bg-soft: #f1ece3;
+      --surface: rgba(255, 255, 255, .92);
+      --surface-strong: #fff;
+      --surface-muted: #f1ece3;
+      --text: #1a231e;
+      --muted: #53645a;
+      --text-muted: #53645a;
+      --border: rgba(26, 35, 30, .12);
+      --accent: #1c9b6b;
+      --accent-strong: #2b7bc7;
+      --accent-soft: rgba(28, 155, 107, .12);
+      --warning: #a55d00;
+      --danger: #b91c1c;
+      --shadow: 0 18px 50px rgba(22, 50, 35, .09);
+      --radius: 20px;
+      --gradient-hero: radial-gradient(circle at 20% 20%, rgba(28, 155, 107, .16), transparent 60%), radial-gradient(circle at 80% 0%, rgba(43, 123, 199, .14), transparent 55%), linear-gradient(140deg, #f8f6f1 0%, #f1ece3 50%, #fff 100%);
+    }
+
+    html[data-theme="dark"] {
+      color-scheme: dark;
+      --bg: #0b0d12;
+      --bg-elevated: #141825;
+      --bg-soft: #1a2032;
+      --surface: rgba(20, 24, 37, .94);
+      --surface-strong: #141825;
+      --surface-muted: #1a2032;
+      --text: #eef1f7;
+      --muted: #9aa4b7;
+      --text-muted: #9aa4b7;
+      --border: rgba(255, 255, 255, .08);
+      --accent: #73d1ff;
+      --accent-strong: #8cf3b2;
+      --accent-soft: rgba(115, 209, 255, .15);
+      --warning: #f4b65f;
+      --danger: #ff8686;
+      --shadow: 0 18px 55px rgba(0, 0, 0, .28);
+      --radius: 20px;
+      --gradient-hero: radial-gradient(circle at 20% 20%, rgba(115, 209, 255, .25), transparent 60%), radial-gradient(circle at 80% 0%, rgba(140, 243, 178, .18), transparent 55%), linear-gradient(145deg, #0b0d12 0%, #0f1421 55%, #0b0d12 100%);
+    }
+
+    * { box-sizing: border-box; }
+    html { min-height: 100%; background: var(--bg); }
+    body {
+      min-height: 100vh;
+      margin: 0;
+      color: var(--text);
+      background: var(--gradient-hero);
+      font: 15px/1.5 var(--font-sans);
+    }
+
+    a { color: inherit; }
+    button, select, input { font: inherit; }
+    button { cursor: pointer; }
+
+    .shell { width: min(1440px, calc(100% - 32px)); margin: 0 auto; padding: 28px 0 56px; }
+    .page-nav { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 28px; }
+    .back-btn { text-decoration: none; }
+
+    .hero {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      align-items: end;
+      gap: 24px;
+      margin-bottom: 24px;
+    }
+    .eyebrow { margin: 0 0 6px; color: var(--accent-strong); font-size: 12px; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; }
+    h1 { margin: 0; font-size: clamp(30px, 5vw, 52px); line-height: 1.02; letter-spacing: -.045em; }
+    .lead { max-width: 720px; margin: 13px 0 0; color: var(--muted); font-size: 16px; }
+    .actions { display: flex; align-items: center; gap: 10px; }
+    .select, .btn {
+      min-height: 42px;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      color: var(--text);
+      background: var(--surface);
+      box-shadow: 0 5px 18px rgba(20, 40, 30, .05);
+    }
+    .select { min-width: 190px; padding: 0 36px 0 13px; }
+    .btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; padding: 0 15px; font-weight: 700; }
+    .btn:hover { border-color: var(--accent); }
+    .btn:disabled { cursor: wait; opacity: .65; }
+    .btn svg { width: 17px; height: 17px; }
+    .btn.loading svg { animation: spin .8s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .view-tabs { display: inline-flex; gap: 5px; padding: 5px; border: 1px solid var(--border); border-radius: 14px; background: var(--surface); box-shadow: 0 6px 22px rgba(20, 40, 30, .05); }
+    .view-tab { min-height: 38px; padding: 0 16px; border: 0; border-radius: 10px; color: var(--muted); background: transparent; font-weight: 750; }
+    .view-tab:hover { color: var(--text); }
+    .view-tab[aria-selected="true"] { color: white; background: linear-gradient(145deg, var(--accent), var(--accent-strong)); box-shadow: 0 7px 18px rgba(0, 168, 107, .20); }
+    .hidden { display: none !important; }
+
+    .summary {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 12px;
+      margin: 22px 0 26px;
+    }
+    .metric {
+      min-height: 98px;
+      padding: 17px 18px;
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      background: var(--surface);
+      backdrop-filter: blur(16px);
+    }
+    .metric-label { color: var(--muted); font-size: 12px; font-weight: 650; }
+    .metric-value { display: block; margin-top: 3px; font-size: 28px; font-weight: 800; letter-spacing: -.035em; }
+    .metric-detail { color: var(--muted); font-size: 12px; }
+
+    .printer-panel {
+      overflow: hidden;
+      margin-top: 18px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: var(--surface);
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(18px);
+    }
+    .printer-head { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 19px 21px; border-bottom: 1px solid var(--border); }
+    .printer-title { display: flex; align-items: center; gap: 11px; min-width: 0; }
+    .status-dot { width: 10px; height: 10px; flex: 0 0 auto; border-radius: 50%; background: var(--danger); box-shadow: 0 0 0 5px color-mix(in srgb, var(--danger) 13%, transparent); }
+    .status-dot.online { background: var(--accent); box-shadow: 0 0 0 5px color-mix(in srgb, var(--accent) 13%, transparent); }
+    .printer-title h2 { overflow: hidden; margin: 0; font-size: 18px; text-overflow: ellipsis; white-space: nowrap; }
+    .printer-title small { display: block; color: var(--muted); font-weight: 500; }
+    .badges { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 7px; }
+    .badge { display: inline-flex; align-items: center; min-height: 25px; padding: 3px 9px; border: 1px solid var(--border); border-radius: 999px; color: var(--muted); background: var(--surface-muted); font-size: 11px; font-weight: 750; }
+    .badge.green { border-color: transparent; color: var(--accent-strong); background: var(--accent-soft); }
+    .badge.warn { color: var(--warning); }
+
+    .slots { display: grid; grid-template-columns: repeat(auto-fill, minmax(245px, 1fr)); gap: 14px; padding: 18px; }
+    .slot {
+      position: relative;
+      overflow: hidden;
+      min-height: 390px;
+      border: 1px solid var(--border);
+      border-radius: 17px;
+      background: var(--surface-strong);
+      transition: transform .18s ease, border-color .18s ease, box-shadow .18s ease;
+    }
+    .slot:hover { transform: translateY(-2px); border-color: color-mix(in srgb, var(--accent) 48%, var(--border)); box-shadow: 0 15px 35px rgba(22, 50, 35, .10); }
+    .slot.empty { min-height: 270px; border-style: dashed; background: color-mix(in srgb, var(--surface-muted) 58%, transparent); }
+    .slot-media { position: relative; display: grid; height: 205px; place-items: center; overflow: hidden; background: linear-gradient(145deg, var(--surface-muted), var(--surface-strong)); }
+    .slot-media::after { position: absolute; inset: auto 0 0; height: 52px; background: linear-gradient(transparent, rgba(0, 0, 0, .06)); content: ""; pointer-events: none; }
+    .shop-image { width: 100%; height: 100%; object-fit: cover; transition: transform .3s ease; }
+    .slot:hover .shop-image { transform: scale(1.025); }
+    .image-source { position: absolute; z-index: 2; right: 10px; bottom: 10px; padding: 4px 8px; border-radius: 999px; color: #fff; background: rgba(10, 15, 12, .7); font-size: 10px; font-weight: 700; text-decoration: none; backdrop-filter: blur(8px); }
+    .image-source:hover { background: var(--accent-strong); }
+
+    .spool-art { --filament: #8a9690; position: relative; width: 142px; height: 142px; border-radius: 50%; background: radial-gradient(circle at 50% 50%, var(--surface-muted) 0 19%, transparent 20%), repeating-radial-gradient(circle at 50% 50%, color-mix(in srgb, var(--filament) 82%, white) 0 6px, var(--filament) 7px 11px); box-shadow: inset 0 0 0 14px rgba(255,255,255,.24), inset 0 0 0 18px rgba(0,0,0,.12), 0 18px 28px rgba(0,0,0,.14); }
+    .spool-art::before, .spool-art::after { position: absolute; top: 50%; width: 22px; height: 50px; border-radius: 10px; background: var(--surface-muted); content: ""; transform: translateY(-50%); }
+    .spool-art::before { left: 15px; }
+    .spool-art::after { right: 15px; }
+    .empty .spool-art { filter: grayscale(1); opacity: .28; }
+
+    .slot-body { padding: 16px 17px 18px; }
+    .slot-kicker { display: flex; align-items: center; justify-content: space-between; gap: 10px; color: var(--muted); font-size: 11px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; }
+    .color-chip { width: 13px; height: 13px; flex: 0 0 auto; border: 1px solid rgba(0,0,0,.18); border-radius: 50%; background: var(--chip); box-shadow: 0 0 0 3px color-mix(in srgb, var(--chip) 20%, transparent); }
+    .slot-name { margin: 7px 0 2px; font-size: 18px; line-height: 1.25; letter-spacing: -.02em; }
+    .slot-subtitle { min-height: 21px; margin: 0; color: var(--muted); font-size: 13px; }
+    .slot-link { display: inline-block; max-width: 100%; color: inherit; text-decoration: none; }
+    .slot-link:hover { color: var(--accent-strong); }
+    .weight-row { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin-top: 15px; }
+    .weight-row strong { font-size: 20px; }
+    .weight-row span { color: var(--muted); font-size: 12px; }
+    .progress { overflow: hidden; height: 7px; margin-top: 7px; border-radius: 99px; background: var(--surface-muted); }
+    .progress > i { display: block; width: var(--value); height: 100%; border-radius: inherit; background: linear-gradient(90deg, var(--accent), #4ed3bd); }
+    .meta { display: grid; grid-template-columns: 1fr 1fr; gap: 9px 12px; margin-top: 15px; padding-top: 13px; border-top: 1px solid var(--border); }
+    .meta div { min-width: 0; }
+    .meta span { display: block; color: var(--muted); font-size: 10px; font-weight: 750; letter-spacing: .05em; text-transform: uppercase; }
+    .meta strong { display: block; overflow: hidden; margin-top: 2px; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+
+    .inventory-panel { overflow: hidden; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); box-shadow: var(--shadow); backdrop-filter: blur(18px); }
+    .inventory-toolbar { display: grid; grid-template-columns: minmax(220px, 1.6fr) minmax(150px, .8fr) minmax(130px, .7fr) auto; gap: 10px; padding: 16px 18px; border-bottom: 1px solid var(--border); }
+    .search, .filter-select { width: 100%; min-height: 42px; border: 1px solid var(--border); border-radius: 11px; color: var(--text); background: var(--surface-strong); outline: none; }
+    .search { padding: 0 13px; }
+    .filter-select { padding: 0 34px 0 12px; }
+    .search:focus, .filter-select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 15%, transparent); }
+    .check-label { display: flex; min-height: 42px; align-items: center; gap: 8px; padding: 0 11px; border: 1px solid var(--border); border-radius: 11px; color: var(--muted); background: var(--surface-strong); font-size: 12px; font-weight: 700; white-space: nowrap; }
+    .check-label input { accent-color: var(--accent); }
+    .inventory-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(245px, 1fr)); gap: 14px; padding: 18px; }
+    .inventory-card { min-height: 395px; }
+    .inventory-card .slot-media { height: 220px; }
+    .inventory-card .spool-art { width: 150px; height: 150px; }
+    .provider-tag { position: absolute; z-index: 2; left: 10px; bottom: 10px; padding: 4px 8px; border-radius: 999px; color: #fff; background: rgba(10, 15, 12, .7); font-size: 10px; font-weight: 750; backdrop-filter: blur(8px); }
+    .inventory-footer { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 15px 18px; border-top: 1px solid var(--border); color: var(--muted); font-size: 12px; }
+    .pagination { display: flex; align-items: center; gap: 8px; }
+    .page-btn { min-width: 38px; min-height: 34px; border: 1px solid var(--border); border-radius: 9px; color: var(--text); background: var(--surface-strong); font-weight: 750; }
+    .page-btn:hover:not(:disabled) { border-color: var(--accent); }
+    .page-btn:disabled { cursor: default; opacity: .4; }
+
+    .notice, .empty-state { padding: 28px; border: 1px solid var(--border); border-radius: var(--radius); color: var(--muted); background: var(--surface); text-align: center; }
+    .notice.error { color: var(--danger); }
+    .empty-state h2 { margin: 0 0 7px; color: var(--text); }
+    .footer-note { margin: 20px 2px 0; color: var(--muted); font-size: 12px; }
+
+    @media (max-width: 850px) {
+      .hero { grid-template-columns: 1fr; align-items: start; }
+      .actions { flex-wrap: wrap; }
+      .summary { grid-template-columns: 1fr 1fr; }
+      .inventory-toolbar { grid-template-columns: 1fr 1fr; }
+    }
+    @media (max-width: 560px) {
+      .shell { width: min(100% - 20px, 1440px); padding-top: 15px; }
+      .page-nav { margin-bottom: 22px; }
+      .hero { gap: 18px; }
+      .actions, .select, .btn { width: 100%; }
+      .view-tabs { display: flex; width: 100%; }
+      .view-tab { flex: 1; }
+      .summary { gap: 8px; }
+      .metric { min-height: 87px; padding: 14px; }
+      .metric-value { font-size: 24px; }
+      .printer-head { align-items: flex-start; padding: 16px; }
+      .badges { max-width: 45%; }
+      .slots { grid-template-columns: 1fr; padding: 11px; }
+      .inventory-toolbar { grid-template-columns: 1fr; padding: 11px; }
+      .inventory-grid { grid-template-columns: 1fr; padding: 11px; }
+      .inventory-footer { align-items: flex-start; flex-direction: column; }
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+        <nav class="page-nav">
+          <button id="back-button" class="btn back-btn" type="button">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="m15 18-6-6 6-6"/></svg>
+            <span data-i18n="page.back">Back to FilaMan</span>
+          </button>
+        </nav>
+        <section class="hero">
+          <div>
+            <p class="eyebrow">Bambu Lab Plugin</p>
+            <h1 data-i18n="page.title">Spool overview</h1>
+            <p class="lead" data-i18n="page.lead">All FilaMan spools in one gallery, plus live status for Bambu AMS systems.</p>
+          </div>
+          <div class="actions">
+            <a class="btn" href="/printers" data-i18n="page.managePrinters">Manage printers</a>
+            <span id="printer-filter-wrap"><select id="printer-filter" class="select" aria-label="Select printer" data-i18n-aria="page.selectPrinter"><option value="all" data-i18n="page.allPrinters">All Bambu printers</option></select></span>
+            <button id="refresh" class="btn" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M20 11a8.1 8.1 0 0 0-15.5-2M4 4v5h5M4 13a8.1 8.1 0 0 0 15.5 2M20 20v-5h-5"/></svg><span data-i18n="common.refresh">Refresh</span></button>
+          </div>
+        </section>
+
+        <nav class="view-tabs" aria-label="Select view" data-i18n-aria="page.selectView">
+          <button class="view-tab" type="button" data-view="ams" aria-selected="true" data-i18n="page.amsLive">AMS live</button>
+          <button class="view-tab" type="button" data-view="spools" aria-selected="false" data-i18n="page.allSpools">All spools</button>
+        </nav>
+        <section id="summary" class="summary" aria-label="Summary" data-i18n-aria="page.summary"></section>
+        <section id="content"><div class="notice" data-i18n="loading.printers">Loading Bambu printers…</div></section>
+        <p class="footer-note" data-i18n="page.footer">Catalog images belong to the shared filament and are reused by all matching spools. Bambu Lab is the first image provider; more manufacturers can be added later.</p>
+  </main>
+
+  <script>
+    (() => {
+      const translations = {
+        en: {
+          'app.subtitle': 'Filament Management',
+          'common.loading': 'Loading…', 'common.refresh': 'Refresh', 'common.catalog': 'Catalog',
+          'nav.dashboard': 'Dashboard', 'nav.manufacturers': 'Manufacturers', 'nav.filaments': 'Filaments',
+          'nav.spools': 'Spools', 'nav.locations': 'Locations', 'nav.printers': 'Printers', 'nav.spoolLog': 'Spool log',
+          'nav.plugins': 'Plugins', 'nav.admin': 'Admin', 'nav.adminPanel': 'Admin panel', 'nav.settings': 'Settings', 'nav.logout': 'Log out',
+          'sidebar.toggle': 'Toggle sidebar', 'sidebar.navigation': 'Main navigation',
+          'theme.label': 'Theme', 'theme.brand': 'Brand', 'theme.light': 'Light', 'theme.dark': 'Dark',
+          'page.back': 'Back to FilaMan', 'page.title': 'Spool overview', 'page.lead': 'All FilaMan spools in one gallery, plus live status for Bambu AMS systems.',
+          'page.managePrinters': 'Manage printers', 'page.selectPrinter': 'Select printer', 'page.allPrinters': 'All Bambu printers',
+          'page.selectView': 'Select view', 'page.amsLive': 'AMS live', 'page.allSpools': 'All spools', 'page.summary': 'Summary',
+          'page.footer': 'Catalog images belong to the shared filament and are reused by all matching spools. Bambu Lab is the first image provider; more manufacturers can be added later.',
+          'loading.printers': 'Loading Bambu printers…', 'loading.spools': 'Loading spools…',
+          'error.login': 'Please sign in to FilaMan first.', 'error.ams': 'The AMS data could not be loaded.', 'error.spools': 'The spools could not be loaded.',
+          'slot.emptyAria': 'Empty AMS slot', 'slot.spoolAria': 'Filament spool', 'slot.unknownFilament': 'Unknown filament',
+          'slot.notLinked': 'Not linked to a FilaMan spool yet', 'slot.ready': 'Ready for a spool', 'slot.image': 'Image: {provider} ↗',
+          'slot.remaining': 'Remaining', 'slot.estimatedRemaining': 'Estimated remaining amount', 'slot.ofWeight': 'of {weight} g',
+          'slot.material': 'Material', 'slot.bambuCode': 'Bambu code', 'slot.filamanSpool': 'FilaMan spool', 'slot.notLinkedShort': 'not linked',
+          'slot.detected': 'detected', 'slot.present': 'present', 'slot.spool': 'Spool', 'slot.status': 'Status', 'slot.source': 'Source ↗',
+          'ams.onlinePrinters': 'Printers online', 'ams.mqttConnection': 'MQTT connection', 'ams.occupiedSlots': 'Occupied slots',
+          'ams.slotsDetected': '{count} slots detected', 'ams.filamanSpools': 'FilaMan spools', 'ams.linked': 'uniquely linked',
+          'ams.catalogImages': 'Catalog images', 'ams.imagesResolved': 'resolved & cached', 'ams.noPrinter': 'No Bambu printer found',
+          'ams.noPrinterHelp': 'First create an active printer with the Bambu Lab driver.', 'ams.readOnly': 'Read-only',
+          'ams.mqttControl': 'MQTT control', 'ams.autoImport': 'Auto import', 'ams.autoImportOff': 'Auto import off',
+          'ams.imagesOn': 'Catalog images on', 'ams.imagesOff': 'Catalog images off', 'ams.connected': 'connected', 'ams.offline': 'offline',
+          'ams.noSlotData': 'No AMS slot data received yet.',
+          'inventory.unknownManufacturer': 'Unknown manufacturer', 'inventory.spoolNumber': 'Spool #{id}', 'inventory.noColor': 'No color name',
+          'inventory.total': 'Total spools', 'inventory.withArchived': 'including archived', 'inventory.active': 'active spools',
+          'inventory.currentPage': 'Current page', 'inventory.pageOf': 'Page {page} of {pages}', 'inventory.onPage': 'on this page',
+          'inventory.remainingMaterial': 'Remaining material', 'inventory.search': 'Search by spool, color, material or manufacturer…',
+          'inventory.searchAria': 'Search spools', 'inventory.filterManufacturer': 'Filter by manufacturer', 'inventory.allManufacturers': 'All manufacturers',
+          'inventory.filterMaterial': 'Filter by material', 'inventory.allMaterials': 'All materials', 'inventory.archived': 'Archived',
+          'inventory.none': 'No spools found', 'inventory.adjustFilters': 'Adjust the search or filters.', 'inventory.range': '{start}–{end} of {total}',
+          'inventory.zero': '0 spools', 'inventory.page': 'Page {page}', 'inventory.previous': 'Previous page', 'inventory.next': 'Next page',
+          'status.new': 'New', 'status.opened': 'Opened', 'status.inUse': 'In use', 'status.active': 'Active', 'status.empty': 'Empty', 'status.archived': 'Archived',
+        },
+        de: {
+          'app.subtitle': 'Filamentverwaltung',
+          'common.loading': 'Wird geladen…', 'common.refresh': 'Aktualisieren', 'common.catalog': 'Katalog',
+          'nav.dashboard': 'Übersicht', 'nav.manufacturers': 'Hersteller', 'nav.filaments': 'Filamente',
+          'nav.spools': 'Spulen', 'nav.locations': 'Standorte', 'nav.printers': 'Drucker', 'nav.spoolLog': 'Spulenprotokoll',
+          'nav.plugins': 'Plugins', 'nav.admin': 'Administration', 'nav.adminPanel': 'Administration', 'nav.settings': 'Einstellungen', 'nav.logout': 'Abmelden',
+          'sidebar.toggle': 'Seitenleiste umschalten', 'sidebar.navigation': 'Hauptnavigation',
+          'theme.label': 'Darstellung', 'theme.brand': 'Marke', 'theme.light': 'Hell', 'theme.dark': 'Dunkel',
+          'page.back': 'Zurück zu FilaMan', 'page.title': 'Spulenübersicht', 'page.lead': 'Alle FilaMan-Spulen als Galerie – plus Live-Status der Bambu-AMS-Systeme.',
+          'page.managePrinters': 'Drucker verwalten', 'page.selectPrinter': 'Drucker auswählen', 'page.allPrinters': 'Alle Bambu-Drucker',
+          'page.selectView': 'Ansicht auswählen', 'page.amsLive': 'AMS Live', 'page.allSpools': 'Alle Spulen', 'page.summary': 'Zusammenfassung',
+          'page.footer': 'Katalogbilder gehören zum gemeinsamen Filament und werden dadurch für alle entsprechenden Spulen wiederverwendet. Bambu Lab ist der erste Bildanbieter; weitere Hersteller können später ergänzt werden.',
+          'loading.printers': 'Bambu-Drucker werden geladen…', 'loading.spools': 'Spulen werden geladen…',
+          'error.login': 'Bitte zuerst bei FilaMan anmelden.', 'error.ams': 'Die AMS-Daten konnten nicht geladen werden.', 'error.spools': 'Die Spulen konnten nicht geladen werden.',
+          'slot.emptyAria': 'Leerer AMS-Slot', 'slot.spoolAria': 'Filamentspule', 'slot.unknownFilament': 'Unbekanntes Filament',
+          'slot.notLinked': 'Noch nicht mit einer FilaMan-Spule verknüpft', 'slot.ready': 'Bereit für eine Spule', 'slot.image': 'Bild: {provider} ↗',
+          'slot.remaining': 'Restmenge', 'slot.estimatedRemaining': 'Geschätzte Restmenge', 'slot.ofWeight': 'von {weight} g',
+          'slot.material': 'Material', 'slot.bambuCode': 'Bambu-Code', 'slot.filamanSpool': 'FilaMan-Spule', 'slot.notLinkedShort': 'nicht verknüpft',
+          'slot.detected': 'erkannt', 'slot.present': 'vorhanden', 'slot.spool': 'Spule', 'slot.status': 'Status', 'slot.source': 'Quelle ↗',
+          'ams.onlinePrinters': 'Drucker online', 'ams.mqttConnection': 'MQTT-Verbindung', 'ams.occupiedSlots': 'Belegte Slots',
+          'ams.slotsDetected': '{count} Slots erkannt', 'ams.filamanSpools': 'FilaMan-Spulen', 'ams.linked': 'eindeutig verknüpft',
+          'ams.catalogImages': 'Katalogbilder', 'ams.imagesResolved': 'aufgelöst & gecacht', 'ams.noPrinter': 'Kein Bambu-Drucker gefunden',
+          'ams.noPrinterHelp': 'Lege zuerst einen aktiven Drucker mit dem Bambu-Lab-Treiber an.', 'ams.readOnly': 'Nur lesen',
+          'ams.mqttControl': 'MQTT-Steuerung', 'ams.autoImport': 'Auto-Import', 'ams.autoImportOff': 'Auto-Import aus',
+          'ams.imagesOn': 'Katalogbilder an', 'ams.imagesOff': 'Katalogbilder aus', 'ams.connected': 'verbunden', 'ams.offline': 'offline',
+          'ams.noSlotData': 'Noch keine AMS-Slotdaten empfangen.',
+          'inventory.unknownManufacturer': 'Unbekannter Hersteller', 'inventory.spoolNumber': 'Spule #{id}', 'inventory.noColor': 'Keine Farbbezeichnung',
+          'inventory.total': 'Spulen gesamt', 'inventory.withArchived': 'inklusive archivierter', 'inventory.active': 'aktive Spulen',
+          'inventory.currentPage': 'Aktuelle Seite', 'inventory.pageOf': 'Seite {page} von {pages}', 'inventory.onPage': 'auf dieser Seite',
+          'inventory.remainingMaterial': 'Restmaterial', 'inventory.search': 'Spule, Farbe, Material oder Hersteller suchen…',
+          'inventory.searchAria': 'Spulen durchsuchen', 'inventory.filterManufacturer': 'Hersteller filtern', 'inventory.allManufacturers': 'Alle Hersteller',
+          'inventory.filterMaterial': 'Material filtern', 'inventory.allMaterials': 'Alle Materialien', 'inventory.archived': 'Archivierte',
+          'inventory.none': 'Keine Spulen gefunden', 'inventory.adjustFilters': 'Passe Suche oder Filter an.', 'inventory.range': '{start}–{end} von {total}',
+          'inventory.zero': '0 Spulen', 'inventory.page': 'Seite {page}', 'inventory.previous': 'Vorherige Seite', 'inventory.next': 'Nächste Seite',
+          'status.new': 'Neu', 'status.opened': 'Geöffnet', 'status.inUse': 'In Benutzung', 'status.active': 'Aktiv', 'status.empty': 'Leer', 'status.archived': 'Archiviert',
+        },
+      };
+      let language = document.documentElement.lang === 'de' ? 'de' : 'en';
+      const t = (key, params = {}) => {
+        const template = translations[language][key] || translations.en[key] || key;
+        return Object.entries(params).reduce((value, [name, replacement]) => value.replaceAll(`{${name}}`, String(replacement)), template);
+      };
+      const translateStaticPage = () => {
+        document.documentElement.lang = language;
+        document.querySelectorAll('[data-i18n]').forEach((element) => { element.textContent = t(element.dataset.i18n); });
+        document.querySelectorAll('[data-i18n-title]').forEach((element) => { element.title = t(element.dataset.i18nTitle); });
+        document.querySelectorAll('[data-i18n-aria]').forEach((element) => { element.setAttribute('aria-label', t(element.dataset.i18nAria)); });
+        document.title = `${t('page.title')} · FilaMan`;
+      };
+      translateStaticPage();
+
+      const content = document.getElementById('content');
+      const summary = document.getElementById('summary');
+      const refreshButton = document.getElementById('refresh');
+      const printerFilter = document.getElementById('printer-filter');
+      const printerFilterWrap = document.getElementById('printer-filter-wrap');
+      const viewTabs = [...document.querySelectorAll('.view-tab')];
+      let activeView = window.location.hash === '#spools' ? 'spools' : 'ams';
+      let amsState = [];
+      let amsLoading = false;
+      let inventoryLoading = false;
+      let inventorySearchTimer = null;
+      const inventory = {
+        items: [], total: 0, page: 1, pageSize: 48,
+        search: '', manufacturerId: '', material: '', includeArchived: false,
+        manufacturers: [], statuses: new Map(), metadataLoaded: false,
+      };
+
+      const escapeHtml = (value) => String(value ?? '')
+        .replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;').replaceAll("'", '&#039;');
+
+      const safeHttpUrl = (value) => {
+        if (!value || !String(value).trim()) return '';
+        try {
+          const parsed = new URL(String(value || ''), window.location.origin);
+          return ['http:', 'https:'].includes(parsed.protocol) ? parsed.href : '';
+        } catch { return ''; }
+      };
+
+      const requestJson = async (url) => {
+        const response = await fetch(url, { credentials: 'include', headers: { Accept: 'application/json' } });
+        if (response.status === 401) throw new Error(t('error.login'));
+        if (!response.ok) throw new Error(`FilaMan API: ${response.status}`);
+        return response.json();
+      };
+
+      const colorHex = (value) => {
+        const normalized = String(value || '').replace(/[^0-9a-f]/gi, '').slice(0, 6);
+        return normalized.length === 6 ? `#${normalized}` : '#8a9690';
+      };
+
+      const finiteNumber = (value) => {
+        const parsed = Number(value);
+        return Number.isFinite(parsed) ? parsed : null;
+      };
+
+      const clampPercent = (value) => value === null ? null : Math.max(0, Math.min(100, value));
+
+      const imageMetadata = (filament = {}) => {
+        const fields = filament.custom_fields || {};
+        const imageUrl = safeHttpUrl(fields.filament_image_url || fields.bambu_shop_image_url);
+        const sourceUrl = safeHttpUrl(fields.filament_image_source_url || fields.bambu_shop_source_url || filament.shop_url);
+        const provider = fields.filament_image_provider || (fields.bambu_shop_image_url ? 'bambulab' : '');
+        return { imageUrl, sourceUrl, provider };
+      };
+
+      const providerLabel = (provider) => {
+        if (!provider) return t('common.catalog');
+        if (String(provider).toLowerCase() === 'bambulab') return 'Bambu Lab';
+        return String(provider).replaceAll('_', ' ').replace(/\b\w/g, (letter) => letter.toUpperCase());
+      };
+
+      const statusLabel = (status) => {
+        if (!status) return '—';
+        const normalized = String(status.key || '').replace(/_([a-z])/g, (_, letter) => letter.toUpperCase());
+        const key = `status.${normalized}`;
+        return translations[language][key] || status.label || '—';
+      };
+
+      const productCode = (slot, spool) => {
+        const fields = spool?.filament?.custom_fields || {};
+        if (slot.bambu_product_code || fields.bambu_product_code) return slot.bambu_product_code || fields.bambu_product_code;
+        const text = `${spool?.filament?.designation || ''} ${spool?.filament?.manufacturer_color_name || ''}`;
+        return text.match(/(?:^|\D)(\d{5})(?:\D|$)/)?.[1] || '—';
+      };
+
+      const slotSort = (a, b) => {
+        const parse = (value) => String(value || '').split('-').map((part) => Number(part));
+        const aa = parse(a.slot_index), bb = parse(b.slot_index);
+        return (aa[0] - bb[0]) || (aa[1] - bb[1]);
+      };
+
+      const spoolFallback = (hex, empty = false) => `
+        <div class="spool-art" style="--filament:${escapeHtml(hex)}" aria-label="${escapeHtml(t(empty ? 'slot.emptyAria' : 'slot.spoolAria'))}"></div>`;
+
+      const bindImageFallbacks = () => {
+        content.querySelectorAll('.shop-image').forEach((image) => {
+          image.addEventListener('error', () => {
+            const media = image.closest('.slot-media');
+            if (!media) return;
+            const hex = media.dataset.fallbackColor || '#8a9690';
+            image.remove();
+            media.querySelector('.image-source')?.remove();
+            media.querySelector('.provider-tag')?.remove();
+            media.insertAdjacentHTML('afterbegin', spoolFallback(hex));
+          }, { once: true });
+        });
+      };
+
+      const renderMetrics = (metrics) => {
+        summary.innerHTML = metrics.map(([label, value, detail]) => `
+          <div class="metric"><span class="metric-label">${escapeHtml(label)}</span><strong class="metric-value">${escapeHtml(value)}</strong><span class="metric-detail">${escapeHtml(detail)}</span></div>`).join('');
+      };
+
+      const renderSlot = (slot, spool) => {
+        const present = Boolean(slot.present || slot.tray_type);
+        const filament = spool?.filament || {};
+        const catalog = imageMetadata(filament);
+        const hex = colorHex(slot.tray_color || filament.colors?.[0]?.color?.hex_code);
+        const imageUrl = safeHttpUrl(slot.shop_image_url) || catalog.imageUrl;
+        const sourceUrl = safeHttpUrl(slot.shop_source_url) || catalog.sourceUrl;
+        const spoolUrl = spool?.id ? `/spools/${encodeURIComponent(spool.id)}` : '';
+        const remain = finiteNumber(slot.remain);
+        const remainingWeight = finiteNumber(spool?.remaining_weight_g);
+        const nominalWeight = finiteNumber(slot.tray_weight);
+        const displayPercent = remain !== null && remain >= 0 && remain <= 100 ? Math.round(remain) : null;
+        const title = filament.designation || slot.filament_name || slot.tray_sub_brands || slot.tray_type || t('slot.unknownFilament');
+        const subtitle = filament.manufacturer_color_name || slot.manufacturer_color_name || t(present ? 'slot.notLinked' : 'slot.ready');
+        const media = imageUrl
+          ? `<img class="shop-image" src="${escapeHtml(imageUrl)}" alt="${escapeHtml(title)}" loading="lazy" decoding="async" referrerpolicy="no-referrer">`
+          : spoolFallback(hex, !present);
+
+        return `
+          <article class="slot ${present ? '' : 'empty'}">
+            <div class="slot-media" data-fallback-color="${escapeHtml(hex)}">
+              ${media}
+              ${imageUrl && sourceUrl ? `<a class="image-source" href="${escapeHtml(sourceUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(t('slot.image', { provider: providerLabel(catalog.provider || 'bambulab') }))}</a>` : ''}
+            </div>
+            <div class="slot-body">
+              <div class="slot-kicker"><span>${escapeHtml(slot.slot_name || slot.slot_index || 'AMS Slot')}</span><i class="color-chip" style="--chip:${escapeHtml(hex)}"></i></div>
+              <h3 class="slot-name">${spoolUrl ? `<a class="slot-link" href="${escapeHtml(spoolUrl)}">${escapeHtml(title)}</a>` : escapeHtml(title)}</h3>
+              <p class="slot-subtitle">${escapeHtml(subtitle)}</p>
+              ${present ? `
+                <div class="weight-row">
+                  <strong>${remainingWeight !== null ? `${Math.round(remainingWeight)} g` : displayPercent !== null ? `${displayPercent} %` : '—'}</strong>
+                  <span>${remainingWeight !== null && displayPercent !== null ? `${displayPercent} %` : nominalWeight !== null ? escapeHtml(t('slot.ofWeight', { weight: Math.round(nominalWeight) })) : escapeHtml(t('slot.remaining'))}</span>
+                </div>
+                <div class="progress" aria-label="${escapeHtml(t('slot.estimatedRemaining'))}"><i style="--value:${displayPercent ?? 0}%"></i></div>
+                <div class="meta">
+                  <div><span>${escapeHtml(t('slot.material'))}</span><strong>${escapeHtml(filament.material_type || slot.tray_type || '—')}</strong></div>
+                  <div><span>${escapeHtml(t('slot.bambuCode'))}</span><strong>${escapeHtml(productCode(slot, spool))}</strong></div>
+                  <div><span>${escapeHtml(t('slot.filamanSpool'))}</span><strong>${escapeHtml(spool?.id ? `#${spool.id}` : t('slot.notLinkedShort'))}</strong></div>
+                  <div><span>RFID</span><strong>${escapeHtml(slot.tag_uid ? t('slot.detected') : '—')}</strong></div>
+                </div>` : ''}
+            </div>
+          </article>`;
+      };
+
+      const renderAms = () => {
+        const filter = printerFilter.value;
+        const visible = filter === 'all' ? amsState : amsState.filter((entry) => String(entry.printer.id) === filter);
+        const allSlots = visible.flatMap((entry) => entry.health.slots || []);
+        const occupied = allSlots.filter((slot) => slot.present || slot.tray_type).length;
+        const connected = visible.filter((entry) => entry.health.connected).length;
+        const linked = allSlots.filter((slot) => slot.spool_id).length;
+        const images = allSlots.filter((slot) => slot.shop_image_url).length;
+        renderMetrics([
+          [t('ams.onlinePrinters'), `${connected}/${visible.length}`, t('ams.mqttConnection')],
+          [t('ams.occupiedSlots'), occupied, t('ams.slotsDetected', { count: allSlots.length })],
+          [t('ams.filamanSpools'), linked, t('ams.linked')],
+          [t('ams.catalogImages'), images, t('ams.imagesResolved')],
+        ]);
+
+        if (!visible.length) {
+          content.innerHTML = `<div class="empty-state"><h2>${escapeHtml(t('ams.noPrinter'))}</h2><p>${escapeHtml(t('ams.noPrinterHelp'))}</p></div>`;
+          return;
+        }
+        content.innerHTML = visible.map(({ printer, health, spools }) => {
+          const slots = [...(health.slots || [])].sort(slotSort);
+          const badges = [
+            `<span class="badge${health.read_only ? ' green' : ''}">${escapeHtml(t(health.read_only ? 'ams.readOnly' : 'ams.mqttControl'))}</span>`,
+            `<span class="badge ${health.auto_import_spools ? 'green' : 'warn'}">${escapeHtml(t(health.auto_import_spools ? 'ams.autoImport' : 'ams.autoImportOff'))}</span>`,
+            `<span class="badge${health.resolve_shop_images ? ' green' : ''}">${escapeHtml(t(health.resolve_shop_images ? 'ams.imagesOn' : 'ams.imagesOff'))}</span>`,
+          ].join('');
+          return `
+            <section class="printer-panel">
+              <header class="printer-head">
+                <div class="printer-title"><i class="status-dot ${health.connected ? 'online' : ''}"></i><div><h2>${escapeHtml(printer.name)}</h2><small>${escapeHtml(health.printer_model || 'Bambu Lab')} · ${escapeHtml(health.ams_type || 'AMS')} · ${escapeHtml(t(health.connected ? 'ams.connected' : 'ams.offline'))}</small></div></div>
+                <div class="badges">${badges}</div>
+              </header>
+              <div class="slots">${slots.length ? slots.map((slot) => renderSlot(slot, spools.get(Number(slot.spool_id)))).join('') : `<div class="notice">${escapeHtml(t('ams.noSlotData'))}</div>`}</div>
+            </section>`;
+        }).join('');
+        bindImageFallbacks();
+      };
+
+      const inventoryPercent = (spool) => {
+        const remaining = finiteNumber(spool.remaining_weight_g);
+        const filamentWeight = finiteNumber(spool.filament?.raw_material_weight_g);
+        const total = finiteNumber(spool.initial_total_weight_g);
+        const empty = finiteNumber(spool.empty_spool_weight_g);
+        const initialFilament = filamentWeight || (total !== null && empty !== null ? Math.max(0, total - empty) : null);
+        return initialFilament && remaining !== null ? clampPercent((remaining / initialFilament) * 100) : null;
+      };
+
+      const renderInventoryCard = (spool) => {
+        const filament = spool.filament || {};
+        const manufacturer = filament.manufacturer?.name || t('inventory.unknownManufacturer');
+        const title = filament.designation || t('inventory.spoolNumber', { id: spool.id });
+        const colorName = filament.manufacturer_color_name || filament.colors?.[0]?.color?.name || t('inventory.noColor');
+        const hex = colorHex(filament.colors?.[0]?.color?.hex_code);
+        const catalog = imageMetadata(filament);
+        const status = inventory.statuses.get(Number(spool.status_id));
+        const remaining = finiteNumber(spool.remaining_weight_g);
+        const percent = inventoryPercent(spool);
+        const hasRfid = Boolean(spool.rfid_uid || spool.custom_fields?.bambu_rfid_tag_1 || spool.custom_fields?.bambu_rfid_tag_2);
+        const media = catalog.imageUrl
+          ? `<img class="shop-image" src="${escapeHtml(catalog.imageUrl)}" alt="${escapeHtml(title)}" loading="lazy" decoding="async" referrerpolicy="no-referrer">`
+          : spoolFallback(hex);
+        return `
+          <article class="slot inventory-card">
+            <div class="slot-media" data-fallback-color="${escapeHtml(hex)}">
+              ${media}
+              ${catalog.imageUrl ? `<span class="provider-tag">${escapeHtml(providerLabel(catalog.provider))}</span>` : ''}
+              ${catalog.imageUrl && catalog.sourceUrl ? `<a class="image-source" href="${escapeHtml(catalog.sourceUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(t('slot.source'))}</a>` : ''}
+            </div>
+            <div class="slot-body">
+              <div class="slot-kicker"><span>${escapeHtml(manufacturer)}</span><i class="color-chip" style="--chip:${escapeHtml(hex)}"></i></div>
+              <h3 class="slot-name"><a class="slot-link" href="/spools/${encodeURIComponent(spool.id)}">${escapeHtml(title)}</a></h3>
+              <p class="slot-subtitle">${escapeHtml(colorName)}</p>
+              <div class="weight-row"><strong>${remaining !== null ? `${Math.round(remaining)} g` : '—'}</strong><span>${percent !== null ? `${Math.round(percent)} %` : escapeHtml(t('slot.remaining'))}</span></div>
+              <div class="progress" aria-label="${escapeHtml(t('slot.remaining'))}"><i style="--value:${percent ?? 0}%"></i></div>
+              <div class="meta">
+                <div><span>${escapeHtml(t('slot.material'))}</span><strong>${escapeHtml(filament.material_type || '—')}</strong></div>
+                <div><span>${escapeHtml(t('slot.status'))}</span><strong>${escapeHtml(statusLabel(status))}</strong></div>
+                <div><span>${escapeHtml(t('slot.spool'))}</span><strong>#${escapeHtml(spool.id)}</strong></div>
+                <div><span>RFID</span><strong>${hasRfid ? escapeHtml(t('slot.present')) : '—'}</strong></div>
+              </div>
+            </div>
+          </article>`;
+      };
+
+      const renderInventory = () => {
+        const pageCount = Math.max(1, Math.ceil(inventory.total / inventory.pageSize));
+        const imageCount = inventory.items.filter((spool) => imageMetadata(spool.filament).imageUrl).length;
+        const remainingTotal = inventory.items.reduce((sum, spool) => sum + (finiteNumber(spool.remaining_weight_g) || 0), 0);
+        const manufacturersWithSpools = inventory.manufacturers.filter((item) => (item.spool_count || 0) + (inventory.includeArchived ? item.archived_spool_count || 0 : 0) > 0);
+        const materials = [...new Set(inventory.manufacturers.flatMap((item) => item.materials || []))].sort();
+        renderMetrics([
+          [t('inventory.total'), inventory.total, t(inventory.includeArchived ? 'inventory.withArchived' : 'inventory.active')],
+          [t('inventory.currentPage'), inventory.items.length, t('inventory.pageOf', { page: inventory.page, pages: pageCount })],
+          [t('ams.catalogImages'), imageCount, t('inventory.onPage')],
+          [t('inventory.remainingMaterial'), `${(remainingTotal / 1000).toFixed(1)} kg`, t('inventory.onPage')],
+        ]);
+
+        const manufacturerOptions = manufacturersWithSpools.map((item) => `<option value="${escapeHtml(item.id)}" ${String(item.id) === String(inventory.manufacturerId) ? 'selected' : ''}>${escapeHtml(item.name)}</option>`).join('');
+        const materialOptions = materials.map((material) => `<option value="${escapeHtml(material)}" ${material === inventory.material ? 'selected' : ''}>${escapeHtml(material)}</option>`).join('');
+        content.innerHTML = `
+          <section class="inventory-panel">
+            <div class="inventory-toolbar">
+              <input id="inventory-search" class="search" type="search" value="${escapeHtml(inventory.search)}" placeholder="${escapeHtml(t('inventory.search'))}" aria-label="${escapeHtml(t('inventory.searchAria'))}">
+              <select id="inventory-manufacturer" class="filter-select" aria-label="${escapeHtml(t('inventory.filterManufacturer'))}"><option value="">${escapeHtml(t('inventory.allManufacturers'))}</option>${manufacturerOptions}</select>
+              <select id="inventory-material" class="filter-select" aria-label="${escapeHtml(t('inventory.filterMaterial'))}"><option value="">${escapeHtml(t('inventory.allMaterials'))}</option>${materialOptions}</select>
+              <label class="check-label"><input id="inventory-archived" type="checkbox" ${inventory.includeArchived ? 'checked' : ''}> ${escapeHtml(t('inventory.archived'))}</label>
+            </div>
+            ${inventory.items.length ? `<div class="inventory-grid">${inventory.items.map(renderInventoryCard).join('')}</div>` : `<div class="empty-state"><h2>${escapeHtml(t('inventory.none'))}</h2><p>${escapeHtml(t('inventory.adjustFilters'))}</p></div>`}
+            <footer class="inventory-footer">
+              <span>${inventory.total ? escapeHtml(t('inventory.range', { start: (inventory.page - 1) * inventory.pageSize + 1, end: Math.min(inventory.page * inventory.pageSize, inventory.total), total: inventory.total })) : escapeHtml(t('inventory.zero'))}</span>
+              <div class="pagination"><button class="page-btn" id="page-prev" type="button" ${inventory.page <= 1 ? 'disabled' : ''} aria-label="${escapeHtml(t('inventory.previous'))}">‹</button><strong>${escapeHtml(t('inventory.page', { page: inventory.page }))}</strong><button class="page-btn" id="page-next" type="button" ${inventory.page >= pageCount ? 'disabled' : ''} aria-label="${escapeHtml(t('inventory.next'))}">›</button></div>
+            </footer>
+          </section>`;
+        bindImageFallbacks();
+
+        document.getElementById('inventory-search')?.addEventListener('input', (event) => {
+          window.clearTimeout(inventorySearchTimer);
+          inventorySearchTimer = window.setTimeout(() => {
+            inventory.search = event.target.value.trim();
+            inventory.page = 1;
+            loadInventory();
+          }, 350);
+        });
+        document.getElementById('inventory-manufacturer')?.addEventListener('change', (event) => {
+          inventory.manufacturerId = event.target.value;
+          inventory.page = 1;
+          loadInventory();
+        });
+        document.getElementById('inventory-material')?.addEventListener('change', (event) => {
+          inventory.material = event.target.value;
+          inventory.page = 1;
+          loadInventory();
+        });
+        document.getElementById('inventory-archived')?.addEventListener('change', (event) => {
+          inventory.includeArchived = event.target.checked;
+          inventory.page = 1;
+          loadInventory();
+        });
+        document.getElementById('page-prev')?.addEventListener('click', () => {
+          if (inventory.page > 1) { inventory.page -= 1; loadInventory(); }
+        });
+        document.getElementById('page-next')?.addEventListener('click', () => {
+          if (inventory.page < pageCount) { inventory.page += 1; loadInventory(); }
+        });
+      };
+
+      const setButtonLoading = (loading) => {
+        refreshButton.disabled = loading;
+        refreshButton.classList.toggle('loading', loading);
+      };
+
+      const loadDriverHealth = async (printerId, force = false) => {
+        const url = `/api/v1/printers/${encodeURIComponent(printerId)}/driver/health`;
+        if (!force) return requestJson(url);
+        try { return await requestJson(`${url}?refresh=1`); }
+        catch { return requestJson(url); }
+      };
+
+      const loadAms = async (force = false) => {
+        if (amsLoading) return;
+        amsLoading = true;
+        setButtonLoading(true);
+        try {
+          const response = await requestJson('/api/v1/printers?page_size=200');
+          const printers = (response.items || []).filter((printer) => printer.driver_key === 'bambulab' && printer.is_active !== false);
+          amsState = await Promise.all(printers.map(async (printer) => {
+            const health = await loadDriverHealth(printer.id, force);
+            const spoolIds = [...new Set((health.slots || []).map((slot) => Number(slot.spool_id)).filter(Number.isFinite))];
+            const spoolResults = await Promise.all(spoolIds.map(async (id) => {
+              try { return await requestJson(`/api/v1/spools/${encodeURIComponent(id)}`); }
+              catch { return null; }
+            }));
+            return { printer, health, spools: new Map(spoolResults.filter(Boolean).map((spool) => [Number(spool.id), spool])) };
+          }));
+          const current = printerFilter.value;
+          printerFilter.innerHTML = `<option value="all">${escapeHtml(t('page.allPrinters'))}</option>` + printers.map((printer) => `<option value="${escapeHtml(printer.id)}">${escapeHtml(printer.name)}</option>`).join('');
+          printerFilter.value = [...printerFilter.options].some((option) => option.value === current) ? current : 'all';
+          if (activeView === 'ams') renderAms();
+        } catch (error) {
+          if (activeView === 'ams') {
+            content.innerHTML = `<div class="notice error">${escapeHtml(error?.message || t('error.ams'))}</div>`;
+            summary.innerHTML = '';
+          }
+        } finally {
+          amsLoading = false;
+          if (activeView === 'ams') setButtonLoading(false);
+        }
+      };
+
+      const loadInventoryMetadata = async () => {
+        if (inventory.metadataLoaded) return;
+        const [manufacturers, statuses] = await Promise.all([
+          requestJson('/api/v1/manufacturers?page_size=200'),
+          requestJson('/api/v1/spools/statuses'),
+        ]);
+        inventory.manufacturers = manufacturers.items || [];
+        inventory.statuses = new Map((statuses || []).map((status) => [Number(status.id), status]));
+        inventory.metadataLoaded = true;
+      };
+
+      const refreshInventoryImages = async () => {
+        let response;
+        try { response = await requestJson('/api/v1/printers?page_size=200'); }
+        catch { return; }
+        const printers = (response.items || []).filter((printer) => printer.driver_key === 'bambulab' && printer.is_active !== false);
+        await Promise.allSettled(printers.map((printer) =>
+          requestJson(`/api/v1/printers/${encodeURIComponent(printer.id)}/driver/health?refresh=1`)
+        ));
+      };
+
+      const loadInventory = async (refreshImages = false) => {
+        if (inventoryLoading) return;
+        inventoryLoading = true;
+        setButtonLoading(true);
+        if (activeView === 'spools') content.innerHTML = `<div class="notice">${escapeHtml(t('loading.spools'))}</div>`;
+        try {
+          if (refreshImages) await refreshInventoryImages();
+          await loadInventoryMetadata();
+          const params = new URLSearchParams({
+            page: String(inventory.page), page_size: String(inventory.pageSize),
+            sort_by: 'manufacturer', sort_order: 'asc',
+          });
+          if (inventory.search) params.set('search', inventory.search);
+          if (inventory.manufacturerId) params.set('manufacturer_id', inventory.manufacturerId);
+          if (inventory.material) params.set('type', inventory.material);
+          if (inventory.includeArchived) params.set('include_archived', 'true');
+          const response = await requestJson(`/api/v1/spools?${params}`);
+          inventory.items = response.items || [];
+          inventory.total = Number(response.total || 0);
+          if (activeView === 'spools') renderInventory();
+        } catch (error) {
+          if (activeView === 'spools') {
+            content.innerHTML = `<div class="notice error">${escapeHtml(error?.message || t('error.spools'))}</div>`;
+            summary.innerHTML = '';
+          }
+        } finally {
+          inventoryLoading = false;
+          if (activeView === 'spools') setButtonLoading(false);
+        }
+      };
+
+      const setView = (view, updateHash = true) => {
+        activeView = view === 'spools' ? 'spools' : 'ams';
+        viewTabs.forEach((tab) => tab.setAttribute('aria-selected', String(tab.dataset.view === activeView)));
+        printerFilterWrap.classList.toggle('hidden', activeView !== 'ams');
+        if (updateHash) history.replaceState(null, '', activeView === 'spools' ? '#spools' : '#ams');
+        if (activeView === 'spools') {
+          if (inventory.metadataLoaded) renderInventory();
+          else loadInventory(true);
+        } else if (amsState.length) renderAms();
+        else loadAms();
+      };
+
+      const syncLanguage = (value) => {
+        const next = String(value || '').toLowerCase().split('-')[0] === 'de' ? 'de' : 'en';
+        localStorage.setItem('lang', next);
+        if (next === language) return;
+        language = next;
+        translateStaticPage();
+        if (activeView === 'spools' && inventory.metadataLoaded) renderInventory();
+        else if (activeView === 'ams' && amsState.length) renderAms();
+      };
+
+      const initializeLanguage = async () => {
+        try {
+          const response = await fetch('/api/v1/me', { credentials: 'include', headers: { Accept: 'application/json' } });
+          if (response.status === 401) { window.location.href = '/login'; return; }
+          if (!response.ok) return;
+          const user = await response.json();
+          syncLanguage(user.language);
+        } catch { /* The local language fallback remains usable. */ }
+      };
+
+      document.getElementById('back-button').addEventListener('click', () => {
+        try {
+          if (document.referrer && new URL(document.referrer).origin === window.location.origin) {
+            window.history.back();
+            return;
+          }
+        } catch { /* Fall through to the dashboard. */ }
+        window.location.href = '/';
+      });
+      viewTabs.forEach((tab) => tab.addEventListener('click', () => setView(tab.dataset.view)));
+      refreshButton.addEventListener('click', () => activeView === 'ams' ? loadAms(true) : loadInventory(true));
+      printerFilter.addEventListener('change', renderAms);
+      initializeLanguage();
+      setView(activeView, false);
+      window.setInterval(() => { if (activeView === 'ams') loadAms(false); }, 20000);
+    })();
+  </script>
+</body>
+</html>
