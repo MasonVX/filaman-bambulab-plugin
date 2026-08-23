@@ -1,4 +1,5 @@
-# Bambu Lab Printer Plugin
-from app.plugins.bambulab.driver import Driver
+"""Bambu Lab printer plugin package for FilaMan."""
+
+from .driver import Driver
 
 __all__ = ["Driver"]

@@ -67,6 +67,7 @@ bump-version.sh
 getBambuIDX.sh
 _*
 !__*
+bambulab/__pycache__/
 local_cache
 .sisyphus/
 releases
