@@ -23,6 +23,8 @@ from app.models.spool import Spool, SpoolStatus
 from app.models.system_extra_field import SystemExtraField
 from app.services.spool_service import SpoolService
 
+from .catalog import _evict_expired
+
 logger = logging.getLogger(__name__)
 
 AUTO_IMPORT_RETRY_SECONDS = 60
@@ -150,6 +152,7 @@ class SpoolSyncMixin:
             return
 
         now = time.monotonic()
+        _evict_expired(self._auto_import_last_attempt, AUTO_IMPORT_RETRY_SECONDS, now)
         candidates: list[dict[str, Any]] = []
         for slot in slots:
             tray_uuid = self._normalize_hex_identifier(slot.get("tray_uuid"), 32)

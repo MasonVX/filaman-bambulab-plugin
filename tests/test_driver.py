@@ -209,6 +209,24 @@ class ShopImageParsingTests(unittest.TestCase):
         driver._current_slots[0]["tray_uuid"] = "11223344556677881122334455667788"
         self.assertNotIn("shop_image_url", driver.health()["slots"][0])
 
+    def test_health_counts_every_external_tray_like_the_ams_info_it_reuses(self):
+        driver, _ = make_driver()
+        driver._current_ams_units = [{"tray_count": 4}]
+        driver._current_slots = [
+            {"slot_index": "0-0", "tray_type": "PLA"},
+            {"slot_index": "255-254", "tray_type": "PLA"},
+            {"slot_index": "255-255", "tray_type": "PLA"},
+        ]
+
+        health = driver.health()
+
+        self.assertEqual(health["slot_count"], 6)
+        self.assertTrue(health["external_spool"])
+        self.assertEqual(health["ams_count"], 1)
+        self.assertEqual(
+            health["slot_count"], driver._build_ams_info(driver._current_slots)["slot_count"]
+        )
+
 
 class PluginPageTests(unittest.TestCase):
     def test_manifest_registers_custom_navigation_page(self):
@@ -268,6 +286,21 @@ class ModuleLayoutTests(unittest.TestCase):
         )
 
 
+class CacheEvictionTests(unittest.TestCase):
+    def test_evict_expired_drops_only_stale_entries(self):
+        cache = {"fresh": 100.0, "stale": 10.0}
+        CATALOG_MODULE._evict_expired(cache, ttl=60, now=100.0)
+        self.assertEqual(cache, {"fresh": 100.0})
+
+    def test_evict_expired_timestamped_drops_only_stale_entries(self):
+        cache = {
+            "fresh": (100.0, {"url": "a"}),
+            "stale": (10.0, {"url": "b"}),
+        }
+        CATALOG_MODULE._evict_expired_timestamped(cache, ttl=60, now=100.0)
+        self.assertEqual(cache, {"fresh": (100.0, {"url": "a"})})
+
+
 class InventoryEnrichmentCoordinatorTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.original_debounce = (
@@ -295,8 +328,6 @@ class InventoryEnrichmentCoordinatorTests(unittest.IsolatedAsyncioTestCase):
         first, _ = make_driver(printer_id=1, resolve_shop_images=True)
         second, _ = make_driver(printer_id=2, resolve_shop_images=True)
         self.drivers = [first, second]
-        first._shop_image_lock = asyncio.Lock()
-        second._shop_image_lock = asyncio.Lock()
         calls = []
 
         async def refresh_first():
@@ -462,6 +493,41 @@ class SlotProcessingTests(unittest.TestCase):
         self.assertEqual(ams_info["slot_count"], 3)
         self.assertTrue(ams_info["external_spool"])
 
+    def test_empty_vir_slot_list_falls_back_to_vt_tray(self):
+        driver, _ = make_driver(auto_import_spools=False)
+        driver._process_slots(
+            {
+                "print": {
+                    "vir_slot": [],
+                    "vt_tray": {"id": "254", "tray_type": "PETG"},
+                }
+            }
+        )
+
+        self.assertEqual(
+            [slot["slot_index"] for slot in driver._current_slots], ["255-254"]
+        )
+        self.assertEqual(driver._current_slots[0]["tray_type"], "PETG")
+
+    def test_empty_vir_slot_list_keeps_previous_external_slots(self):
+        driver, _ = make_driver(auto_import_spools=False)
+        driver._process_slots(
+            {"print": {"vir_slot": [{"id": "254", "tray_type": "PETG"}]}}
+        )
+        self.assertEqual(
+            [slot["slot_index"] for slot in driver._current_slots], ["255-254"]
+        )
+
+        # A push_status with an empty vir_slot list and no vt_tray must not
+        # wipe the previously known external tray (no spurious slots_update
+        # with the external spool suddenly gone).
+        driver._process_slots({"print": {"vir_slot": []}})
+
+        self.assertEqual(
+            [slot["slot_index"] for slot in driver._current_slots], ["255-254"]
+        )
+        self.assertEqual(driver._current_slots[0]["tray_type"], "PETG")
+
 
 class ReadOnlyTests(unittest.IsolatedAsyncioTestCase):
     async def test_read_only_blocks_direct_setting(self):
@@ -491,10 +557,16 @@ class AutoImportDatabaseTests(unittest.IsolatedAsyncioTestCase):
         for module in self.original_session_makers:
             module.async_session_maker = self.sessions
 
+        # The per-filament shop-image lock/throttle are class-level (shared
+        # across Driver instances by design, see CatalogMixin), so previous
+        # tests' asyncio.Lock objects (bound to an already-closed event loop)
+        # must not leak into this test's fresh loop.
+        CATALOG_MODULE.CatalogMixin._shop_image_locks.clear()
+        CATALOG_MODULE.CatalogMixin._shop_image_last_attempt.clear()
+
         self.driver, self.events = make_driver(auto_import_spools=True)
         self.driver._loop = asyncio.get_running_loop()
         self.driver._auto_import_lock = asyncio.Lock()
-        self.driver._shop_image_lock = asyncio.Lock()
         self.driver._printer_name = "Test Printer"
 
         async def no_store_search(_product_code, _product_url=None):
@@ -607,6 +679,25 @@ class AutoImportDatabaseTests(unittest.IsolatedAsyncioTestCase):
             SPOOL_SYNC_MODULE.BAMBU_RFID_TAG_1_FIELD, spool.custom_fields
         )
 
+    async def test_shop_image_refresh_does_not_require_physical_tag_uid(self):
+        # tray_uuid alone is Bambu's identity (see README); tag_uid must not
+        # additionally gate whether a shop-image lookup is scheduled.
+        self.driver._resolve_shop_images = True
+        captured: list[dict] = []
+
+        async def fake_refresh(slots):
+            captured.extend(slots)
+
+        self.driver._refresh_shop_images_for_slots = fake_refresh
+        slot = {k: v for k, v in self.slot.items() if k != "tag_uid"}
+
+        self.driver._schedule_shop_image_refresh([slot])
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+        self.assertEqual(len(captured), 1)
+        self.assertEqual(captured[0]["tray_uuid"], slot["tray_uuid"])
+
     async def test_physical_tag_uid_is_not_used_as_spool_identity(self):
         await self.driver._auto_import_rfid_spools([self.slot])
         await self.driver._auto_import_rfid_spools(
@@ -702,6 +793,70 @@ class AutoImportDatabaseTests(unittest.IsolatedAsyncioTestCase):
                 CATALOG_MODULE.BAMBU_SHOP_IMAGE_URL_FIELD not in (fields or {})
                 for fields in spool_custom_fields
             )
+        )
+
+    async def test_refresh_shop_images_for_slots_continues_after_one_slot_fails(self):
+        class _FakeFilament:
+            def __init__(self, id):
+                self.id = id
+
+        slot_a = {**self.slot, "slot_index": "0-0"}
+        slot_b = {**self.slot, "slot_index": "0-1"}
+
+        async def fake_find(db, slot):
+            return _FakeFilament(id=100 if slot["slot_index"] == "0-0" else 200)
+
+        self.driver._find_matching_filament = fake_find
+
+        calls = []
+
+        async def fake_cache(filament_id):
+            calls.append(filament_id)
+            if filament_id == 100:
+                raise RuntimeError("boom")
+            return {"shop_image_url": "https://store.bblcdn.eu/ok.png"}
+
+        self.driver._cache_shop_image_for_filament = fake_cache
+
+        with self.assertLogs(level="WARNING"):
+            await self.driver._refresh_shop_images_for_slots([slot_a, slot_b])
+
+        self.assertEqual(sorted(calls), [100, 200])
+        self.assertNotIn("0-0", self.driver._slot_display_metadata)
+        self.assertEqual(
+            self.driver._slot_display_metadata["0-1"]["shop_image_url"],
+            "https://store.bblcdn.eu/ok.png",
+        )
+
+    async def test_offline_fallback_image_is_used_when_no_product_url_resolves(self):
+        # No shop_url, no bambu_material_id/family match -> product_url stays
+        # None; store search (mocked to no_store_search) also finds nothing.
+        # The static offline-fallback image for this product code must still
+        # reach shop_image_url instead of being discarded by the product_url
+        # check.
+        async with self.sessions() as db:
+            filament = await db.get(Filament, self.filament_id)
+            filament.designation = "Matte - Pure White (17100)"
+            filament.manufacturer_color_name = "Pure White (17100)"
+            await db.commit()
+
+        async def unexpected_fetch(_product_url):
+            self.fail("must not need to scrape a product page for the offline fallback")
+
+        self.driver._fetch_shop_product_images = unexpected_fetch
+
+        metadata = await self.driver._cache_shop_image_for_filament(self.filament_id)
+
+        expected_image = Driver._optimized_shop_image_url(
+            CATALOG_MODULE._BAMBU_PRODUCT_IMAGES_BY_CODE["17100"]
+        )
+        self.assertEqual(metadata["shop_image_url"], expected_image)
+
+        async with self.sessions() as db:
+            filament = await db.get(Filament, self.filament_id)
+        self.assertEqual(
+            filament.custom_fields[CATALOG_MODULE.BAMBU_SHOP_IMAGE_URL_FIELD],
+            expected_image,
         )
 
     async def test_pla_pure_without_shop_url_uses_material_family_source(self):
@@ -859,6 +1014,100 @@ class AutoImportDatabaseTests(unittest.IsolatedAsyncioTestCase):
             "bambulab",
         )
         self.assertIsNone(unopened.custom_fields)
+
+    async def test_shop_image_lock_is_shared_and_mutually_exclusive_across_drivers(self):
+        second, _ = make_driver(printer_id=2)
+
+        lock_a = self.driver._shop_image_lock_for(self.filament_id)
+        lock_b = second._shop_image_lock_for(self.filament_id)
+        # The lock is keyed by filament_id on the shared CatalogMixin class,
+        # not per Driver instance -- two printers touching the same catalog
+        # row must serialize through the exact same lock object.
+        self.assertIs(lock_a, lock_b)
+
+        order = []
+
+        async def hold(lock, name):
+            async with lock:
+                order.append(f"{name}-enter")
+                await asyncio.sleep(0.01)
+                order.append(f"{name}-exit")
+
+        await asyncio.gather(hold(lock_a, "a"), hold(lock_b, "b"))
+
+        self.assertEqual(order, ["a-enter", "a-exit", "b-enter", "b-exit"])
+
+    async def _add_bambu_filaments_with_spools(self, count: int) -> list[int]:
+        async with self.sessions() as db:
+            manufacturer = (
+                await db.execute(
+                    select(Manufacturer).where(Manufacturer.name == "Bambu Lab")
+                )
+            ).scalar_one()
+            opened_status = (
+                await db.execute(
+                    select(SpoolStatus).where(SpoolStatus.key == "opened")
+                )
+            ).scalar_one()
+            ids = []
+            for i in range(count):
+                filament = Filament(
+                    manufacturer_id=manufacturer.id,
+                    designation=f"PLA Basic - Color {i} (2{i:04d})",
+                    material_type="PLA",
+                    diameter_mm=1.75,
+                )
+                db.add(filament)
+                await db.flush()
+                db.add(Spool(filament_id=filament.id, status_id=opened_status.id))
+                ids.append(filament.id)
+            await db.commit()
+        return ids
+
+    async def test_inventory_scan_bounds_concurrency(self):
+        await self._add_bambu_filaments_with_spools(
+            ENRICHMENT_MODULE.INVENTORY_SCAN_CONCURRENCY + 2
+        )
+
+        concurrent = 0
+        max_concurrent = 0
+
+        async def fake_cache(filament_id):
+            nonlocal concurrent, max_concurrent
+            concurrent += 1
+            max_concurrent = max(max_concurrent, concurrent)
+            await asyncio.sleep(0.01)
+            concurrent -= 1
+            return {"shop_image_url": "https://store.bblcdn.eu/x.png"}
+
+        self.driver._cache_shop_image_for_filament = fake_cache
+        stats = await self.driver._refresh_inventory_shop_images()
+
+        self.assertEqual(stats["filaments"], ENRICHMENT_MODULE.INVENTORY_SCAN_CONCURRENCY + 2)
+        self.assertGreater(max_concurrent, 1, "scan must not be fully serial")
+        self.assertLessEqual(max_concurrent, ENRICHMENT_MODULE.INVENTORY_SCAN_CONCURRENCY)
+
+    async def test_inventory_scan_stops_after_driver_deregisters_mid_scan(self):
+        await self._add_bambu_filaments_with_spools(3)
+
+        original_concurrency = ENRICHMENT_MODULE.INVENTORY_SCAN_CONCURRENCY
+        ENRICHMENT_MODULE.INVENTORY_SCAN_CONCURRENCY = 1
+        calls = []
+
+        async def fake_cache(filament_id):
+            calls.append(filament_id)
+            # Simulate stop() running concurrently with this scan.
+            self.driver._running = False
+            return {}
+
+        self.driver._cache_shop_image_for_filament = fake_cache
+        try:
+            stats = await self.driver._refresh_inventory_shop_images()
+        finally:
+            ENRICHMENT_MODULE.INVENTORY_SCAN_CONCURRENCY = original_concurrency
+
+        self.assertEqual(stats["filaments"], 3)
+        self.assertEqual(len(calls), 1, "no filament after the stop() must start work")
 
     async def test_skips_spool_when_no_matching_filament_exists(self):
         unknown = {

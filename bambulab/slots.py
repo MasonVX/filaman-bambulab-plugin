@@ -340,14 +340,14 @@ class SlotSupportMixin:
             ams_slots = prev_ams_slots
 
         # Newer printer generations use vir_slot (list); older ones use vt_tray.
+        # An empty/falsy vir_slot (e.g. []) falls through to vt_tray, and from
+        # there to prev_ext_slots below, instead of hard-clearing external slots.
         external_trays: list[dict[str, Any]] | None = None
-        if vir_slot is not None:
+        if vir_slot:
             if isinstance(vir_slot, list):
                 external_trays = [item for item in vir_slot if isinstance(item, dict)]
             elif isinstance(vir_slot, dict):
                 external_trays = [vir_slot]
-            else:
-                external_trays = []
         elif isinstance(vt_tray, dict):
             external_trays = [vt_tray]
 

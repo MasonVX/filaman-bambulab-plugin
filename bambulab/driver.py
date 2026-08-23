@@ -71,9 +71,7 @@ class Driver(
         self._ams_serials: dict[str, str] = {}  # ams_id -> serial number
         self._printer_name: str | None = None  # Wird in start() aus DB geladen
         self._auto_import_lock: asyncio.Lock | None = None
-        self._shop_image_lock: asyncio.Lock | None = None
         self._auto_import_last_attempt: dict[str, float] = {}
-        self._shop_image_last_attempt: dict[int, float] = {}
         self._shop_slot_last_scheduled: dict[str, float] = {}
         self._shop_page_cache: dict[str, tuple[float, dict[str, str]]] = {}
         self._store_search_cache: dict[
@@ -92,7 +90,6 @@ class Driver(
         self._running = True
         self._loop = asyncio.get_running_loop()
         self._auto_import_lock = asyncio.Lock()
-        self._shop_image_lock = asyncio.Lock()
 
         self._printer = Printer(
             ip_address=self._host,
@@ -382,10 +379,7 @@ class Driver(
 
     def health(self) -> dict[str, Any]:
         """Return the current printer, AMS and optional catalog-image status."""
-        ext_exists = any(s.get("slot_index") == "255-254" for s in self._current_slots)
-        total_slots = sum(u.get("tray_count", 0) for u in self._current_ams_units)
-        if ext_exists:
-            total_slots += 1
+        ams_info = self._build_ams_info(self._current_slots)
         display_slots: list[dict[str, Any]] = []
         for current in self._current_slots:
             slot = dict(current)
@@ -410,11 +404,11 @@ class Driver(
             "auto_import_spools": self._auto_import_spools,
             "resolve_shop_images": self._resolve_shop_images,
             "printer_model": self._printer_model,
-            "ams_type": "AMS Lite" if self._is_ams_lite else "AMS",
-            "ams_count": len(self._current_ams_units),
-            "slot_count": total_slots,
-            "external_spool": ext_exists,
-            "ams_units": self._current_ams_units,
+            "ams_type": ams_info["ams_type"],
+            "ams_count": ams_info["ams_count"],
+            "slot_count": ams_info["slot_count"],
+            "external_spool": ams_info["external_spool"],
+            "ams_units": ams_info["ams_units"],
             "shop_image_count": sum(
                 bool(slot.get("shop_image_url")) for slot in display_slots
             ),

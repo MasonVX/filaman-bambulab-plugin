@@ -61,6 +61,20 @@ FILAMENT_IMAGE_PROVIDER_FIELD = "filament_image_provider"
 FILAMENT_IMAGE_CHECKED_AT_FIELD = "filament_image_checked_at"
 
 
+def _evict_expired(cache: dict[Any, float], ttl: float, now: float) -> None:
+    """Drop entries whose timestamp value is older than ttl, in place."""
+    for key in [k for k, ts in cache.items() if now - ts >= ttl]:
+        del cache[key]
+
+
+def _evict_expired_timestamped(
+    cache: dict[Any, tuple[float, Any]], ttl: float, now: float
+) -> None:
+    """Drop entries whose (timestamp, value) tuple is older than ttl, in place."""
+    for key in [k for k, v in cache.items() if now - v[0] >= ttl]:
+        del cache[key]
+
+
 class _JsonLdScriptParser(HTMLParser):
     """Collect JSON-LD script bodies without depending on an HTML package."""
 
@@ -96,6 +110,23 @@ class _JsonLdScriptParser(HTMLParser):
 
 class CatalogMixin:
     """Provide product lookup, validation and metadata caching to the driver."""
+
+    # Shared across ALL Driver instances (class attributes, not per-instance):
+    # the Filament row _cache_shop_image_for_filament reads/writes is shared
+    # between printers, so the lock serializing access to it must be too —
+    # a per-instance lock (as used before) fails to serialize concurrent
+    # writes from two Bambu printers that share the same catalog filament.
+    _shop_image_locks: dict[int, asyncio.Lock] = {}
+    _shop_image_last_attempt: dict[int, float] = {}
+
+    @classmethod
+    def _shop_image_lock_for(cls, filament_id: int) -> asyncio.Lock:
+        """Return the shared lock guarding one filament's catalog row."""
+        lock = cls._shop_image_locks.get(filament_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            cls._shop_image_locks[filament_id] = lock
+        return lock
 
     @staticmethod
     def _bambu_product_code(*values: Any) -> str | None:
@@ -289,8 +320,9 @@ class CatalogMixin:
             else ""
         )
         cache_key = f"{product_code}:{expected_slug}"
-        cached = self._store_search_cache.get(cache_key)
         now = time.monotonic()
+        _evict_expired_timestamped(self._store_search_cache, SHOP_PAGE_MEMORY_CACHE_SECONDS, now)
+        cached = self._store_search_cache.get(cache_key)
         if cached and now - cached[0] < SHOP_PAGE_MEMORY_CACHE_SECONDS:
             return dict(cached[1]) if cached[1] else None
 
@@ -434,8 +466,9 @@ class CatalogMixin:
 
     async def _fetch_shop_product_images(self, product_url: str) -> dict[str, str]:
         """Download one allowed product page and extract its color images."""
-        cached = self._shop_page_cache.get(product_url)
         now = time.monotonic()
+        _evict_expired_timestamped(self._shop_page_cache, SHOP_PAGE_MEMORY_CACHE_SECONDS, now)
+        cached = self._shop_page_cache.get(product_url)
         if cached and now - cached[0] < SHOP_PAGE_MEMORY_CACHE_SECONDS:
             return dict(cached[1])
 
@@ -464,145 +497,150 @@ class CatalogMixin:
         self, filament_id: int
     ) -> dict[str, Any]:
         """Resolve and persist image metadata on the shared filament record."""
-        now = datetime.now(timezone.utc)
-        async with async_session_maker() as db:
-            filament = await db.get(Filament, filament_id)
-            if filament is None:
-                return {}
-            custom_fields = dict(filament.custom_fields or {})
-            product_code = self._bambu_product_code(
-                custom_fields.get(BAMBU_PRODUCT_CODE_FIELD),
-                custom_fields.get("bambu_color_code"),
-                filament.designation,
-                filament.manufacturer_color_name,
-            )
-            profile_changed = self._normalize_generated_bambu_profile(
-                filament, custom_fields, product_code
-            )
-            if profile_changed:
-                await db.commit()
-            product_url = self._allowed_shop_url(
-                filament.shop_url
-                or custom_fields.get(FILAMENT_IMAGE_SOURCE_URL_FIELD)
-                or custom_fields.get(BAMBU_SHOP_SOURCE_URL_FIELD)
-            ) or self._catalog_product_url(filament, custom_fields)
-            image_url = self._allowed_shop_image_url(
-                custom_fields.get(FILAMENT_IMAGE_URL_FIELD)
-                or custom_fields.get(BAMBU_SHOP_IMAGE_URL_FIELD)
-            )
-            checked_at = self._parse_cache_timestamp(
-                custom_fields.get(FILAMENT_IMAGE_CHECKED_AT_FIELD)
-                or custom_fields.get(BAMBU_SHOP_IMAGE_CHECKED_AT_FIELD)
-            )
-            resolver_is_current = (
-                str(custom_fields.get(BAMBU_IMAGE_RESOLVER_VERSION_FIELD) or "")
-                == str(STORE_SEARCH_RESOLVER_VERSION)
-            )
-            base_metadata = {
-                "filament_id": filament.id,
-                "filament_name": filament.designation,
-                "manufacturer_color_name": filament.manufacturer_color_name,
-                "material_type": filament.material_type,
-                "bambu_product_code": product_code,
-                "shop_source_url": product_url,
-                "shop_image_url": image_url,
-                "image_provider": custom_fields.get(
-                    FILAMENT_IMAGE_PROVIDER_FIELD
+        async with self._shop_image_lock_for(filament_id):
+            now = datetime.now(timezone.utc)
+            async with async_session_maker() as db:
+                filament = await db.get(Filament, filament_id)
+                if filament is None:
+                    return {}
+                custom_fields = dict(filament.custom_fields or {})
+                product_code = self._bambu_product_code(
+                    custom_fields.get(BAMBU_PRODUCT_CODE_FIELD),
+                    custom_fields.get("bambu_color_code"),
+                    filament.designation,
+                    filament.manufacturer_color_name,
                 )
-                or ("bambulab" if image_url else None),
-            }
+                profile_changed = self._normalize_generated_bambu_profile(
+                    filament, custom_fields, product_code
+                )
+                if profile_changed:
+                    await db.commit()
+                product_url = self._allowed_shop_url(
+                    filament.shop_url
+                    or custom_fields.get(FILAMENT_IMAGE_SOURCE_URL_FIELD)
+                    or custom_fields.get(BAMBU_SHOP_SOURCE_URL_FIELD)
+                ) or self._catalog_product_url(filament, custom_fields)
+                image_url = self._allowed_shop_image_url(
+                    custom_fields.get(FILAMENT_IMAGE_URL_FIELD)
+                    or custom_fields.get(BAMBU_SHOP_IMAGE_URL_FIELD)
+                )
+                checked_at = self._parse_cache_timestamp(
+                    custom_fields.get(FILAMENT_IMAGE_CHECKED_AT_FIELD)
+                    or custom_fields.get(BAMBU_SHOP_IMAGE_CHECKED_AT_FIELD)
+                )
+                resolver_is_current = (
+                    str(custom_fields.get(BAMBU_IMAGE_RESOLVER_VERSION_FIELD) or "")
+                    == str(STORE_SEARCH_RESOLVER_VERSION)
+                )
+                base_metadata = {
+                    "filament_id": filament.id,
+                    "filament_name": filament.designation,
+                    "manufacturer_color_name": filament.manufacturer_color_name,
+                    "material_type": filament.material_type,
+                    "bambu_product_code": product_code,
+                    "shop_source_url": product_url,
+                    "shop_image_url": image_url,
+                    "image_provider": custom_fields.get(
+                        FILAMENT_IMAGE_PROVIDER_FIELD
+                    )
+                    or ("bambulab" if image_url else None),
+                }
 
-        if not product_code:
-            return base_metadata
-        if (
-            checked_at
-            and now - checked_at < timedelta(days=SHOP_IMAGE_CACHE_DAYS)
-            and image_url
-            and resolver_is_current
-        ):
-            return base_metadata
+            if not product_code:
+                return base_metadata
+            if (
+                checked_at
+                and now - checked_at < timedelta(days=SHOP_IMAGE_CACHE_DAYS)
+                and image_url
+                and resolver_is_current
+            ):
+                return base_metadata
 
-        last_attempt = self._shop_image_last_attempt.get(filament_id, 0)
-        if (
-            last_attempt
-            and time.monotonic() - last_attempt < SHOP_IMAGE_ERROR_RETRY_SECONDS
-        ):
-            return base_metadata
-        self._shop_image_last_attempt[filament_id] = time.monotonic()
-
-        search_result: dict[str, str] | None = None
-        try:
-            search_result = await self._fetch_store_search_image(
-                product_code, product_url
+            attempt_now = time.monotonic()
+            _evict_expired(
+                self._shop_image_last_attempt, SHOP_IMAGE_ERROR_RETRY_SECONDS, attempt_now
             )
-        except Exception as exc:
-            logger.warning(
-                "Could not resolve Bambu store search image for product %s: %s",
-                product_code,
-                exc,
-            )
+            last_attempt = self._shop_image_last_attempt.get(filament_id, 0)
+            if (
+                last_attempt
+                and attempt_now - last_attempt < SHOP_IMAGE_ERROR_RETRY_SECONDS
+            ):
+                return base_metadata
+            self._shop_image_last_attempt[filament_id] = attempt_now
 
-        search_resolved = bool(search_result)
-        resolved_image = (
-            search_result.get("shop_image_url") if search_result else None
-        )
-        if search_result:
-            product_url = search_result.get("shop_source_url") or product_url
-
-        if not resolved_image:
-            resolved_image = self._optimized_shop_image_url(
-                _BAMBU_PRODUCT_IMAGES_BY_CODE.get(product_code)
-            )
-        if not resolved_image and product_url:
+            search_result: dict[str, str] | None = None
             try:
-                product_images = await self._fetch_shop_product_images(product_url)
+                search_result = await self._fetch_store_search_image(
+                    product_code, product_url
+                )
             except Exception as exc:
                 logger.warning(
-                    "Could not refresh Bambu shop image for filament %s: %s",
-                    filament_id,
+                    "Could not resolve Bambu store search image for product %s: %s",
+                    product_code,
                     exc,
                 )
-                return base_metadata
-            resolved_image = product_images.get(product_code)
-        if not product_url:
-            return base_metadata
 
-        base_metadata["shop_source_url"] = product_url
-        checked_at_value = now.isoformat()
-        async with async_session_maker() as db:
-            filament = await db.get(Filament, filament_id)
-            if filament is None:
-                return base_metadata
-            custom_fields = dict(filament.custom_fields or {})
-            custom_fields[BAMBU_PRODUCT_CODE_FIELD] = product_code
-            custom_fields[BAMBU_SHOP_SOURCE_URL_FIELD] = product_url
-            custom_fields[BAMBU_SHOP_IMAGE_CHECKED_AT_FIELD] = checked_at_value
-            custom_fields[FILAMENT_IMAGE_SOURCE_URL_FIELD] = product_url
-            custom_fields[FILAMENT_IMAGE_PROVIDER_FIELD] = "bambulab"
-            custom_fields[FILAMENT_IMAGE_CHECKED_AT_FIELD] = checked_at_value
-            if search_resolved:
-                custom_fields[BAMBU_IMAGE_RESOLVER_VERSION_FIELD] = (
-                    STORE_SEARCH_RESOLVER_VERSION
+            search_resolved = bool(search_result)
+            resolved_image = (
+                search_result.get("shop_image_url") if search_result else None
+            )
+            if search_result:
+                product_url = search_result.get("shop_source_url") or product_url
+
+            if not resolved_image:
+                resolved_image = self._optimized_shop_image_url(
+                    _BAMBU_PRODUCT_IMAGES_BY_CODE.get(product_code)
                 )
-            if resolved_image:
-                custom_fields[BAMBU_SHOP_IMAGE_URL_FIELD] = resolved_image
-                custom_fields[FILAMENT_IMAGE_URL_FIELD] = resolved_image
-            filament.custom_fields = custom_fields
-            if not filament.shop_url:
-                filament.shop_url = product_url
-            flag_modified(filament, "custom_fields")
-            await db.commit()
+            if not resolved_image and product_url:
+                try:
+                    product_images = await self._fetch_shop_product_images(product_url)
+                except Exception as exc:
+                    logger.warning(
+                        "Could not refresh Bambu shop image for filament %s: %s",
+                        filament_id,
+                        exc,
+                    )
+                    return base_metadata
+                resolved_image = product_images.get(product_code)
+            if not product_url and not resolved_image:
+                return base_metadata
 
-        base_metadata["shop_image_url"] = resolved_image or image_url
-        base_metadata["image_provider"] = "bambulab"
-        logger.info(
-            "%s Bambu shop image metadata for filament %s (product %s)",
-            "Cached" if resolved_image else "Checked",
-            filament_id,
-            product_code,
-        )
-        await event_bus.publish({"event": "filaments_changed"})
-        return base_metadata
+            base_metadata["shop_source_url"] = product_url
+            checked_at_value = now.isoformat()
+            async with async_session_maker() as db:
+                filament = await db.get(Filament, filament_id)
+                if filament is None:
+                    return base_metadata
+                custom_fields = dict(filament.custom_fields or {})
+                custom_fields[BAMBU_PRODUCT_CODE_FIELD] = product_code
+                custom_fields[BAMBU_SHOP_SOURCE_URL_FIELD] = product_url
+                custom_fields[BAMBU_SHOP_IMAGE_CHECKED_AT_FIELD] = checked_at_value
+                custom_fields[FILAMENT_IMAGE_SOURCE_URL_FIELD] = product_url
+                custom_fields[FILAMENT_IMAGE_PROVIDER_FIELD] = "bambulab"
+                custom_fields[FILAMENT_IMAGE_CHECKED_AT_FIELD] = checked_at_value
+                if search_resolved:
+                    custom_fields[BAMBU_IMAGE_RESOLVER_VERSION_FIELD] = (
+                        STORE_SEARCH_RESOLVER_VERSION
+                    )
+                if resolved_image:
+                    custom_fields[BAMBU_SHOP_IMAGE_URL_FIELD] = resolved_image
+                    custom_fields[FILAMENT_IMAGE_URL_FIELD] = resolved_image
+                filament.custom_fields = custom_fields
+                if not filament.shop_url:
+                    filament.shop_url = product_url
+                flag_modified(filament, "custom_fields")
+                await db.commit()
+
+            base_metadata["shop_image_url"] = resolved_image or image_url
+            base_metadata["image_provider"] = "bambulab"
+            logger.info(
+                "%s Bambu shop image metadata for filament %s (product %s)",
+                "Cached" if resolved_image else "Checked",
+                filament_id,
+                product_code,
+            )
+            await event_bus.publish({"event": "filaments_changed"})
+            return base_metadata
 
     def _schedule_shop_image_refresh(self, slots: list[dict[str, Any]]) -> None:
         """Queue low-frequency lookups for genuine Bambu RFID tray changes."""
@@ -610,14 +648,15 @@ class CatalogMixin:
             return
         candidates = []
         now = time.monotonic()
+        _evict_expired(self._shop_slot_last_scheduled, SHOP_IMAGE_SCHEDULE_SECONDS, now)
         for slot in slots:
             if not slot.get("present"):
                 continue
             # Only genuine Bambu RFID trays are allowed to trigger an external
             # shop lookup. Custom filament with matching color must not do so.
+            # tray_uuid alone identifies a genuine Bambu tray (see README);
+            # tag_uid is optional metadata and must not gate this.
             if not self._normalize_hex_identifier(slot.get("tray_uuid"), 32):
-                continue
-            if not self._normalize_hex_identifier(slot.get("tag_uid"), 16):
                 continue
             identity = self._slot_identity(slot)
             last_scheduled = self._shop_slot_last_scheduled.get(identity, 0)
@@ -637,12 +676,10 @@ class CatalogMixin:
         self, slots: list[dict[str, Any]]
     ) -> None:
         """Match tray slots to filaments and cache their display metadata."""
-        if not self._shop_image_lock:
-            return
-        async with self._shop_image_lock:
-            for slot in slots:
-                slot_index = str(slot.get("slot_index") or "")
-                filament_id: int | None = None
+        for slot in slots:
+            slot_index = str(slot.get("slot_index") or "")
+            filament_id: int | None = None
+            try:
                 async with async_session_maker() as db:
                     spool_id = self._slot_spool_ids.get(slot_index)
                     if spool_id:
@@ -654,8 +691,15 @@ class CatalogMixin:
                 if filament_id is None:
                     continue
                 metadata = await self._cache_shop_image_for_filament(filament_id)
-                if metadata:
-                    self._slot_display_metadata[slot_index] = {
-                        "_slot_identity": self._slot_identity(slot),
-                        **metadata,
-                    }
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning(
+                    "Bambu shop image refresh failed for slot %s: %s", slot_index, exc
+                )
+                continue
+            if metadata:
+                self._slot_display_metadata[slot_index] = {
+                    "_slot_identity": self._slot_identity(slot),
+                    **metadata,
+                }

@@ -7,6 +7,7 @@ debounces inventory events and keeps a periodic scan as a recovery path.
 import asyncio
 import json
 import logging
+from typing import Any
 
 from sqlalchemy import func, select
 
@@ -20,6 +21,10 @@ logger = logging.getLogger(__name__)
 INVENTORY_IMAGE_SCAN_SECONDS = 6 * 60 * 60
 INVENTORY_IMAGE_EVENT_DEBOUNCE_SECONDS = 0.5
 INVENTORY_IMAGE_EVENTS = frozenset({"spools_changed", "filaments_changed"})
+# Rate-limits concurrent lookups against the external Bambu shop API; the
+# per-filament lock in CatalogMixin already keeps writes to one filament safe,
+# so different filaments can resolve in parallel up to this bound.
+INVENTORY_SCAN_CONCURRENCY = 4
 
 
 class CatalogEnrichmentMixin:
@@ -31,26 +36,35 @@ class CatalogEnrichmentMixin:
     _inventory_enrichment_worker_task: asyncio.Task | None = None
     async def _refresh_inventory_shop_images(self) -> dict[str, int]:
         """Resolve images for every Bambu filament that has a physical spool."""
-        if not self._shop_image_lock:
-            return {"filaments": 0, "images": 0}
-        async with self._shop_image_lock:
-            async with async_session_maker() as db:
-                result = await db.execute(
-                    select(Filament.id)
-                    .join(Manufacturer, Filament.manufacturer_id == Manufacturer.id)
-                    .join(Spool, Spool.filament_id == Filament.id)
-                    .where(func.lower(Manufacturer.name).in_(("bambu", "bambu lab")))
-                    .distinct()
-                    .order_by(Filament.id)
-                )
-                filament_ids = list(result.scalars().all())
+        async with async_session_maker() as db:
+            result = await db.execute(
+                select(Filament.id)
+                .join(Manufacturer, Filament.manufacturer_id == Manufacturer.id)
+                .join(Spool, Spool.filament_id == Filament.id)
+                .where(func.lower(Manufacturer.name).in_(("bambu", "bambu lab")))
+                .distinct()
+                .order_by(Filament.id)
+            )
+            filament_ids = list(result.scalars().all())
 
-            image_count = 0
-            for filament_id in filament_ids:
-                metadata = await self._cache_shop_image_for_filament(filament_id)
-                if metadata.get("shop_image_url"):
-                    image_count += 1
-            return {"filaments": len(filament_ids), "images": image_count}
+        semaphore = asyncio.Semaphore(INVENTORY_SCAN_CONCURRENCY)
+
+        async def _bounded(filament_id: int) -> dict[str, Any]:
+            async with semaphore:
+                # Abort once this driver has stopped (stop() sets _running
+                # False before unregistering, see driver.py), so a departing
+                # owner doesn't keep resolving the whole remaining list
+                # against now-stale state. Deliberately not also checking
+                # _inventory_enrichment_instances membership: refresh_status()
+                # calls this directly on drivers that were never registered
+                # as the shared scan's owner, and that path must keep working.
+                if not self._running:
+                    return {}
+                return await self._cache_shop_image_for_filament(filament_id)
+
+        results = await asyncio.gather(*(_bounded(fid) for fid in filament_ids))
+        image_count = sum(bool(r.get("shop_image_url")) for r in results)
+        return {"filaments": len(filament_ids), "images": image_count}
 
     @classmethod
     def _inventory_enrichment_owner(cls) -> "CatalogEnrichmentMixin | None":
