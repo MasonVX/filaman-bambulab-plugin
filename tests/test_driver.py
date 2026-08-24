@@ -661,6 +661,45 @@ class AutoImportDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(spool.rfid_uid)
         self.assertEqual(spool.remaining_weight_g, 750)
 
+    async def test_import_reuses_spool_with_tray_uuid_in_rfid_uid(self):
+        legacy_rfid_uid = (
+            "aa:bb:cc:dd:ee:ff:00:11:aa:bb:cc:dd:ee:ff:00:11"
+        )
+        async with self.sessions() as db:
+            status_id = await db.scalar(
+                select(SpoolStatus.id).where(SpoolStatus.key == "opened")
+            )
+            legacy_spool = Spool(
+                filament_id=self.filament_id,
+                status_id=status_id,
+                rfid_uid=legacy_rfid_uid,
+                remaining_weight_g=1000,
+                custom_fields={},
+            )
+            db.add(legacy_spool)
+            await db.commit()
+            await db.refresh(legacy_spool)
+            legacy_spool_id = legacy_spool.id
+
+        await self.driver._auto_import_rfid_spools([self.slot])
+
+        async with self.sessions() as db:
+            count = await db.scalar(select(func.count()).select_from(Spool))
+            spool = (await db.execute(select(Spool))).scalar_one()
+
+        self.assertEqual(count, 1)
+        self.assertEqual(spool.id, legacy_spool_id)
+        self.assertEqual(spool.rfid_uid, legacy_rfid_uid)
+        self.assertEqual(
+            spool.external_id,
+            "bambulab:AABBCCDDEEFF0011AABBCCDDEEFF0011",
+        )
+        self.assertEqual(spool.remaining_weight_g, 750)
+        self.assertEqual(
+            spool.custom_fields[SPOOL_SYNC_MODULE.BAMBU_RFID_TAG_1_FIELD],
+            "A1B2C3D4E5F60102",
+        )
+
     async def test_valid_tray_uuid_imports_without_physical_tag_uid(self):
         slot = {**self.slot, "tag_uid": "0000000000000000"}
 

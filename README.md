@@ -66,7 +66,7 @@ Bambu RFID trays report two different identifiers:
 - `tray_uuid` identifies the logical Bambu spool and is its sole Bambu identity. It is normalized to 32 uppercase hexadecimal characters and stored as `external_id=bambulab:<tray_uuid>` for duplicate prevention.
 - `tag_uid` identifies only one physical RFID chip. When present, the first UID seen via MQTT is retained as optional metadata in **Bambu RFID Tag 1**. It is neither required for importing nor used to match a spool.
 
-FilaMan's built-in `rfid_uid` field is never used or overwritten by this plugin and remains available for custom RFID tags.
+FilaMan's built-in `rfid_uid` field is never written or overwritten by this plugin and remains available for custom RFID tags. For compatibility with Spoolman imports and external readers that stored the Bambu `tray_uuid` there, automatic import checks a normalized 32-character `rfid_uid` before creating a spool. A match reuses the existing spool and, when its `external_id` is empty, adds the canonical `bambulab:<tray_uuid>` external ID without changing `rfid_uid`.
 
 At driver startup, the plugin ensures that the system spool extra fields **Bambu RFID Tag 1** (`bambu_rfid_tag_1`) and **Bambu RFID Tag 2** (`bambu_rfid_tag_2`) exist. The first field can receive the MQTT `tag_uid`; the second remains available for another reader or integration.
 

@@ -138,13 +138,41 @@ class SpoolSyncMixin:
         return selected
 
     async def _find_existing_bambu_spool(
-        self, db, external_id: str
+        self, db, external_id: str, tray_uuid: str
     ) -> Spool | None:
-        """Find an already imported Bambu spool by its stable external ID."""
+        """Find an imported spool by Bambu external ID or legacy RFID UID."""
         result = await db.execute(
             select(Spool).where(Spool.external_id == external_id)
         )
-        return result.scalar_one_or_none()
+        spool = result.scalar_one_or_none()
+        if spool is not None:
+            return spool
+
+        # Some importers stored Bambu's logical tray UUID in FilaMan's built-in
+        # RFID field before ``external_id`` became the canonical integration
+        # identity. Normalize candidate values so case and common separators do
+        # not cause the same physical spool to be imported a second time.
+        result = await db.execute(
+            select(Spool).where(Spool.rfid_uid.is_not(None))
+        )
+        matches = [
+            candidate
+            for candidate in result.scalars().all()
+            if self._normalize_hex_identifier(candidate.rfid_uid, 32) == tray_uuid
+        ]
+        if not matches:
+            return None
+        if len(matches) > 1:
+            logger.warning(
+                "Multiple FilaMan spools have rfid_uid matching Bambu "
+                "tray_uuid=%s; using the oldest spool id", tray_uuid
+            )
+        spool = min(matches, key=lambda candidate: candidate.id)
+        logger.info(
+            "Matched existing FilaMan spool %s by legacy rfid_uid for "
+            "Bambu tray_uuid=%s", spool.id, tray_uuid
+        )
+        return spool
 
     def _schedule_auto_import(self, slots: list[dict[str, Any]]) -> None:
         """Queue eligible RFID trays for a rate-limited asynchronous upsert."""
@@ -194,7 +222,9 @@ class SpoolSyncMixin:
                 estimated_weight = self._estimated_remaining_weight(slot)
 
                 async with async_session_maker() as db:
-                    spool = await self._find_existing_bambu_spool(db, external_id)
+                    spool = await self._find_existing_bambu_spool(
+                        db, external_id, tray_uuid
+                    )
 
                     if spool is None:
                         filament = await self._find_matching_filament(db, slot)
