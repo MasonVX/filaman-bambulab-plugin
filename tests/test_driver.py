@@ -73,6 +73,12 @@ class IdentifierTests(unittest.TestCase):
             )
         )
 
+    def test_spool_weight_sync_defaults_to_disabled(self):
+        driver, _ = make_driver(auto_import_spools=True)
+
+        self.assertFalse(driver._sync_spool_weight)
+        self.assertFalse(driver.health()["sync_spool_weight"])
+
 
 class ShopImageParsingTests(unittest.TestCase):
     def test_store_search_uses_highlighted_product_media_not_color_palette(self):
@@ -236,7 +242,16 @@ class PluginPageTests(unittest.TestCase):
         self.assertEqual(manifest["version"], "2.7.3")
         self.assertEqual(manifest["page_url"], "/plugin-page/bambulab")
         self.assertTrue(manifest["show_in_nav"])
+        self.assertFalse(
+            manifest["config_schema"]["properties"]["sync_spool_weight"]["default"]
+        )
         self.assertTrue((plugin_dir / "page.html").is_file())
+
+    def test_spool_gallery_prefers_article_number_for_product_code(self):
+        plugin_dir = Path(__file__).resolve().parents[1] / "bambulab"
+        page = (plugin_dir / "page.html").read_text()
+
+        self.assertIn("fields.article_number || slot.bambu_product_code", page)
 
     def test_spool_gallery_requests_primary_driver_image_refresh(self):
         plugin_dir = Path(__file__).resolve().parents[1] / "bambulab"
@@ -564,7 +579,10 @@ class AutoImportDatabaseTests(unittest.IsolatedAsyncioTestCase):
         CATALOG_MODULE.CatalogMixin._shop_image_locks.clear()
         CATALOG_MODULE.CatalogMixin._shop_image_last_attempt.clear()
 
-        self.driver, self.events = make_driver(auto_import_spools=True)
+        self.driver, self.events = make_driver(
+            auto_import_spools=True,
+            sync_spool_weight=True,
+        )
         self.driver._loop = asyncio.get_running_loop()
         self.driver._auto_import_lock = asyncio.Lock()
         self.driver._printer_name = "Test Printer"
@@ -775,6 +793,25 @@ class AutoImportDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(count, 1)
         self.assertEqual(spool.remaining_weight_g, 420)
 
+    async def test_disabled_weight_sync_never_writes_bambu_estimate(self):
+        self.driver._sync_spool_weight = False
+        await self.driver._auto_import_rfid_spools([self.slot])
+
+        async with self.sessions() as db:
+            spool = (await db.execute(select(Spool))).scalar_one()
+            self.assertIsNone(spool.remaining_weight_g)
+            spool.remaining_weight_g = 600
+            await db.commit()
+
+        await self.driver._auto_import_rfid_spools(
+            [{**self.slot, "remain": 42}]
+        )
+
+        async with self.sessions() as db:
+            spool = (await db.execute(select(Spool))).scalar_one()
+
+        self.assertEqual(spool.remaining_weight_g, 600)
+
     async def test_invalid_estimate_does_not_overwrite_existing_weight(self):
         await self.driver._auto_import_rfid_spools([self.slot])
         await self.driver._auto_import_rfid_spools(
@@ -840,7 +877,7 @@ class AutoImportDatabaseTests(unittest.IsolatedAsyncioTestCase):
             filament.designation = "PLA Matte - Charcoal"
             filament.manufacturer_color_name = "Charcoal"
             filament.custom_fields = {
-                CATALOG_MODULE.SPOOLMAN_ARTICLE_NUMBER_FIELD: "11101"
+                CATALOG_MODULE.ARTICLE_NUMBER_FIELD: "11101"
             }
             await db.commit()
 
@@ -869,12 +906,52 @@ class AutoImportDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(metadata["bambu_product_code"], "11101")
         self.assertEqual(metadata["shop_image_url"], expected_image)
         self.assertEqual(
-            filament.custom_fields[CATALOG_MODULE.BAMBU_PRODUCT_CODE_FIELD],
+            filament.custom_fields[CATALOG_MODULE.ARTICLE_NUMBER_FIELD],
             "11101",
+        )
+        self.assertNotIn(
+            CATALOG_MODULE.BAMBU_PRODUCT_CODE_FIELD,
+            filament.custom_fields,
         )
         self.assertEqual(
             filament.custom_fields[CATALOG_MODULE.FILAMENT_IMAGE_URL_FIELD],
             expected_image,
+        )
+
+    async def test_legacy_product_code_backfills_article_number_on_cache_hit(self):
+        cached_image = "https://store.bblcdn.eu/product/cached-charcoal.png"
+        async with self.sessions() as db:
+            filament = await db.get(Filament, self.filament_id)
+            filament.designation = "PLA Matte - Charcoal"
+            filament.manufacturer_color_name = "Charcoal"
+            filament.custom_fields = {
+                CATALOG_MODULE.BAMBU_PRODUCT_CODE_FIELD: "11101",
+                CATALOG_MODULE.FILAMENT_IMAGE_URL_FIELD: cached_image,
+                CATALOG_MODULE.FILAMENT_IMAGE_CHECKED_AT_FIELD: (
+                    "2099-01-01T00:00:00+00:00"
+                ),
+                CATALOG_MODULE.BAMBU_IMAGE_RESOLVER_VERSION_FIELD: (
+                    CATALOG_MODULE.STORE_SEARCH_RESOLVER_VERSION
+                ),
+            }
+            await db.commit()
+
+        async def unexpected_search(_product_code, _product_url=None):
+            self.fail("a current image cache must not trigger store search")
+
+        self.driver._fetch_store_search_image = unexpected_search
+        metadata = await self.driver._cache_shop_image_for_filament(
+            self.filament_id
+        )
+
+        async with self.sessions() as db:
+            filament = await db.get(Filament, self.filament_id)
+
+        self.assertEqual(metadata["bambu_product_code"], "11101")
+        self.assertEqual(metadata["shop_image_url"], cached_image)
+        self.assertEqual(
+            filament.custom_fields[CATALOG_MODULE.ARTICLE_NUMBER_FIELD],
+            "11101",
         )
 
     async def test_refresh_shop_images_for_slots_continues_after_one_slot_fails(self):
@@ -1034,6 +1111,10 @@ class AutoImportDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(filament.material_subgroup, "pure")
         self.assertEqual(metadata["bambu_product_code"], "17100")
         self.assertEqual(metadata["shop_image_url"], expected_image)
+        self.assertEqual(
+            filament.custom_fields[CATALOG_MODULE.ARTICLE_NUMBER_FIELD],
+            "17100",
+        )
         self.assertEqual(
             filament.custom_fields[CATALOG_MODULE.FILAMENT_IMAGE_URL_FIELD],
             expected_image,

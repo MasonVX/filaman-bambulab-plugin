@@ -41,9 +41,9 @@ SHOP_PAGE_MAX_BYTES = 5 * 1024 * 1024
 BAMBU_SHOP_IMAGE_URL_FIELD = "bambu_shop_image_url"
 BAMBU_SHOP_SOURCE_URL_FIELD = "bambu_shop_source_url"
 BAMBU_SHOP_IMAGE_CHECKED_AT_FIELD = "bambu_shop_image_checked_at"
-BAMBU_PRODUCT_CODE_FIELD = "bambu_product_code"
+BAMBU_PRODUCT_CODE_FIELD = "bambu_product_code"  # Legacy read compatibility only
 BAMBU_IMAGE_RESOLVER_VERSION_FIELD = "bambu_image_resolver_version"
-SPOOLMAN_ARTICLE_NUMBER_FIELD = "article_number"
+ARTICLE_NUMBER_FIELD = "article_number"
 _BAMBU_PRODUCT_URLS_BY_MATERIAL_ID = {
     "GFA19": "https://eu.store.bambulab.com/products/pla-pure",
 }
@@ -506,16 +506,24 @@ class CatalogMixin:
                     return {}
                 custom_fields = dict(filament.custom_fields or {})
                 product_code = self._bambu_product_code(
+                    custom_fields.get(ARTICLE_NUMBER_FIELD),
                     custom_fields.get(BAMBU_PRODUCT_CODE_FIELD),
                     custom_fields.get("bambu_color_code"),
-                    custom_fields.get(SPOOLMAN_ARTICLE_NUMBER_FIELD),
                     filament.designation,
                     filament.manufacturer_color_name,
                 )
+                article_number_changed = False
+                if product_code and not str(
+                    custom_fields.get(ARTICLE_NUMBER_FIELD) or ""
+                ).strip():
+                    custom_fields[ARTICLE_NUMBER_FIELD] = product_code
+                    filament.custom_fields = custom_fields
+                    flag_modified(filament, "custom_fields")
+                    article_number_changed = True
                 profile_changed = self._normalize_generated_bambu_profile(
                     filament, custom_fields, product_code
                 )
-                if profile_changed:
+                if profile_changed or article_number_changed:
                     await db.commit()
                 product_url = self._allowed_shop_url(
                     filament.shop_url
@@ -614,7 +622,6 @@ class CatalogMixin:
                 if filament is None:
                     return base_metadata
                 custom_fields = dict(filament.custom_fields or {})
-                custom_fields[BAMBU_PRODUCT_CODE_FIELD] = product_code
                 custom_fields[BAMBU_SHOP_SOURCE_URL_FIELD] = product_url
                 custom_fields[BAMBU_SHOP_IMAGE_CHECKED_AT_FIELD] = checked_at_value
                 custom_fields[FILAMENT_IMAGE_SOURCE_URL_FIELD] = product_url

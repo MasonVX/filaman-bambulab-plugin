@@ -454,7 +454,9 @@
 
       const productCode = (slot, spool) => {
         const fields = spool?.filament?.custom_fields || {};
-        if (slot.bambu_product_code || fields.bambu_product_code) return slot.bambu_product_code || fields.bambu_product_code;
+        if (fields.article_number || slot.bambu_product_code || fields.bambu_product_code) {
+          return fields.article_number || slot.bambu_product_code || fields.bambu_product_code;
+        }
         const text = `${spool?.filament?.designation || ''} ${spool?.filament?.manufacturer_color_name || ''}`;
         return text.match(/(?:^|\D)(\d{5})(?:\D|$)/)?.[1] || '—';
       };

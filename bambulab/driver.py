@@ -58,6 +58,7 @@ class Driver(
         self._access_code = config.get("access_code", "")
         self._read_only = bool(config.get("read_only", False))
         self._auto_import_spools = bool(config.get("auto_import_spools", False))
+        self._sync_spool_weight = bool(config.get("sync_spool_weight", False))
         self._resolve_shop_images = bool(config.get("resolve_shop_images", False))
         self._connected = False
         self._reconnect_interval = (
@@ -402,6 +403,7 @@ class Driver(
             "pending": self._pending is not None,
             "read_only": self._read_only,
             "auto_import_spools": self._auto_import_spools,
+            "sync_spool_weight": self._sync_spool_weight,
             "resolve_shop_images": self._resolve_shop_images,
             "printer_model": self._printer_model,
             "ams_type": ams_info["ams_type"],

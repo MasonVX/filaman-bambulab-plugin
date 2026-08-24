@@ -219,7 +219,11 @@ class SpoolSyncMixin:
                 created = False
                 dirty = False
                 weight_changed = False
-                estimated_weight = self._estimated_remaining_weight(slot)
+                estimated_weight = (
+                    self._estimated_remaining_weight(slot)
+                    if self._sync_spool_weight
+                    else None
+                )
 
                 async with async_session_maker() as db:
                     spool = await self._find_existing_bambu_spool(
