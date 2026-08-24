@@ -43,6 +43,7 @@ BAMBU_SHOP_SOURCE_URL_FIELD = "bambu_shop_source_url"
 BAMBU_SHOP_IMAGE_CHECKED_AT_FIELD = "bambu_shop_image_checked_at"
 BAMBU_PRODUCT_CODE_FIELD = "bambu_product_code"
 BAMBU_IMAGE_RESOLVER_VERSION_FIELD = "bambu_image_resolver_version"
+SPOOLMAN_ARTICLE_NUMBER_FIELD = "article_number"
 _BAMBU_PRODUCT_URLS_BY_MATERIAL_ID = {
     "GFA19": "https://eu.store.bambulab.com/products/pla-pure",
 }
@@ -507,6 +508,7 @@ class CatalogMixin:
                 product_code = self._bambu_product_code(
                     custom_fields.get(BAMBU_PRODUCT_CODE_FIELD),
                     custom_fields.get("bambu_color_code"),
+                    custom_fields.get(SPOOLMAN_ARTICLE_NUMBER_FIELD),
                     filament.designation,
                     filament.manufacturer_color_name,
                 )

@@ -99,8 +99,9 @@ When **Catalog Images (Bambu Lab)** is enabled, genuine Bambu RFID trays can tri
 
 Only URL metadata is persisted in the matching shared **filament's** `custom_fields`: `filament_image_url`, `filament_image_source_url`, `filament_image_provider` and `filament_image_checked_at`. Compatibility copies remain in the existing `bambu_shop_*` fields. This generic field scheme lets later manufacturer resolvers feed the same gallery without changing its UI. Every physical spool made from that filament automatically reuses the metadata. For known new Bambu families such as `GFA19` / PLA Pure, the plugin can supply the official product-family URL when an independently created filament does not yet have a `shop_url`. Current storefront color swatches are preferred over generic JSON-LD product images.
 
-FilaScan's raw `bambu_color_code` field is accepted as the same product-code
-identity as the driver's `bambu_product_code`. If an independently imported
+FilaScan's raw `bambu_color_code` field and Spoolman imports' `article_number`
+field are accepted as the same product-code identity as the driver's
+`bambu_product_code`. Only a standalone five-digit code is used. If an independently imported
 filament still has FilaScan's exact technical fallback name, the Bambu plugin
 safely normalizes it to the FilamentDB-style display name during enrichment.
 For PLA Pure White `17100`, the previous palette image is automatically

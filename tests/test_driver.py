@@ -795,6 +795,49 @@ class AutoImportDatabaseTests(unittest.IsolatedAsyncioTestCase):
             )
         )
 
+    async def test_spoolman_article_number_is_used_for_store_image_lookup(self):
+        async with self.sessions() as db:
+            filament = await db.get(Filament, self.filament_id)
+            filament.designation = "PLA Matte - Charcoal"
+            filament.manufacturer_color_name = "Charcoal"
+            filament.custom_fields = {
+                CATALOG_MODULE.SPOOLMAN_ARTICLE_NUMBER_FIELD: "11101"
+            }
+            await db.commit()
+
+        expected_image = "https://store.bblcdn.eu/product/charcoal-spool.jpg"
+        expected_source = (
+            "https://eu.store.bambulab.com/de/products/pla-matte"
+            "?id=123456789"
+        )
+
+        async def search_image(product_code, product_url):
+            self.assertEqual(product_code, "11101")
+            self.assertIsNone(product_url)
+            return {
+                "shop_image_url": expected_image,
+                "shop_source_url": expected_source,
+            }
+
+        self.driver._fetch_store_search_image = search_image
+        metadata = await self.driver._cache_shop_image_for_filament(
+            self.filament_id
+        )
+
+        async with self.sessions() as db:
+            filament = await db.get(Filament, self.filament_id)
+
+        self.assertEqual(metadata["bambu_product_code"], "11101")
+        self.assertEqual(metadata["shop_image_url"], expected_image)
+        self.assertEqual(
+            filament.custom_fields[CATALOG_MODULE.BAMBU_PRODUCT_CODE_FIELD],
+            "11101",
+        )
+        self.assertEqual(
+            filament.custom_fields[CATALOG_MODULE.FILAMENT_IMAGE_URL_FIELD],
+            expected_image,
+        )
+
     async def test_refresh_shop_images_for_slots_continues_after_one_slot_fails(self):
         class _FakeFilament:
             def __init__(self, id):
