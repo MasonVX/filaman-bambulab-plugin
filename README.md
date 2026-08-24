@@ -176,6 +176,24 @@ The plugin registers the following per-printer parameters for filaments and spoo
 
 Parameters can be set at filament level (shared across spools) or overridden per individual spool.
 
+## Development and Releases
+
+Commit subjects use the [Conventional Commits](https://www.conventionalcommits.org/)
+format, for example `feat(catalog): add a product resolver` or
+`fix: reuse an existing spool`. Pull requests should preferably be squash-merged
+with a Conventional Commit title. A breaking change is declared with `!` in the
+subject or a `BREAKING CHANGE:` footer.
+
+The GitHub release workflow treats `bambulab/plugin.json` as the authoritative
+version source and generates release notes from direct commits since the
+previous `bambulab-v*` tag. It groups features, fixes and other change types,
+ignores merge commits and `chore: bump plugin version ...`, and rejects other
+nonconventional direct commit subjects. Before publishing, it validates the
+exact SemVer transition: `fix` and maintenance changes require a patch release,
+`feat` requires a minor release, and a breaking change requires a major release.
+The pure-Python generator and its tests live in `scripts/generate_release_notes.py`
+and `tests/test_release_notes.py`.
+
 ## AI-Assisted Development
 
 This plugin has been developed with the assistance of generative AI tools, including OpenAI Codex. AI assistance has been used for parts of the implementation, refactoring, testing, debugging and documentation. The project is not presented as exclusively human-written; its human maintainers remain responsible for reviewing, accepting and publishing all changes.

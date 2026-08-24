@@ -15,6 +15,11 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Test release notes generator
+        run: python -m unittest discover -s tests -p 'test_release_notes.py' -v
 
       - name: Find and release plugins
         env:
@@ -44,14 +49,20 @@ jobs:
             echo "📦 Erstelle $ZIP_NAME ..."
             zip -r "$ZIP_NAME" "$FOLDER_NAME" -x "$FOLDER_NAME/__pycache__/*" "$FOLDER_NAME/*.pyc"
 
-            # Release-Notes zusammenbauen
+            # Release-Notes aus Conventional Commits zusammenbauen und den
+            # Versionssprung gegen die Änderungen seit dem letzten Tag prüfen.
             DESCRIPTION=$(grep -o '"description"[[:space:]]*:[[:space:]]*"[^"]*"' "$PLUGIN_JSON" | head -1 | sed 's/.*"description"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
-            NOTES="**Plugin:** ${FOLDER_NAME}"
-            NOTES="${NOTES}%0A**Version:** ${VERSION}"
-            NOTES="${NOTES}%0A**Description:** ${DESCRIPTION}"
+            python scripts/generate_release_notes.py \
+              --plugin "$FOLDER_NAME" \
+              --version "$VERSION" \
+              --target HEAD \
+              --repository-url "${{ github.server_url }}/${{ github.repository }}" \
+              --description "$DESCRIPTION" \
+              --path "$PLUGIN_DIR" \
+              --path README.md \
+              --output /tmp/release_notes.md
 
             echo "📤 Erstelle GitHub Release $TAG ..."
-            printf '%s' "$NOTES" | sed 's/%0A/\n/g' > /tmp/release_notes.md
             gh release create "$TAG" "$ZIP_NAME" \
               --title "$FOLDER_NAME $VERSION" \
               --notes-file /tmp/release_notes.md \
