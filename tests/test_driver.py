@@ -3,6 +3,7 @@ import asyncio
 import json
 import unittest
 from pathlib import Path
+from unittest.mock import AsyncMock, patch
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
@@ -982,6 +983,128 @@ class AutoImportDatabaseTests(unittest.IsolatedAsyncioTestCase):
             spool = await db.get(Spool, spool_id)
         self.assertIsNone(spool.location_id)
 
+    async def test_printer_rename_reuses_the_stable_slot_location(self):
+        """A display-name change must not create a second physical slot."""
+        spool_id = await self._spool_carrying({})
+        self.driver._printer_name = "Old Printer Name"
+        await self.driver._update_spool_location(spool_id, 0, 0)
+
+        self.driver._printer_name = "New Printer Name"
+        await self.driver._update_spool_location(spool_id, 0, 0)
+
+        async with self.sessions() as db:
+            locations = list((await db.execute(select(Location))).scalars())
+
+        self.assertEqual(len(locations), 1)
+        self.assertEqual(locations[0].identifier, "bambulab_1_0_0")
+        self.assertEqual(locations[0].name, "New Printer Name - AMS A1")
+
+    async def test_equally_named_printers_get_distinct_slot_locations(self):
+        """The human-readable printer name is not a database identity."""
+        first_spool = await self._spool_carrying({})
+        second_spool = await self._spool_carrying({})
+        self.driver._printer_name = "P1S"
+        second_driver, _ = make_driver(printer_id=2)
+        second_driver._printer_name = "P1S"
+
+        await self.driver._update_spool_location(first_spool, 0, 0)
+        await second_driver._update_spool_location(second_spool, 0, 0)
+
+        async with self.sessions() as db:
+            locations = list(
+                (
+                    await db.execute(select(Location).order_by(Location.identifier))
+                ).scalars()
+            )
+            first = await db.get(Spool, first_spool)
+            second = await db.get(Spool, second_spool)
+
+        self.assertEqual(
+            [location.identifier for location in locations],
+            ["bambulab_1_0_0", "bambulab_2_0_0"],
+        )
+        self.assertEqual(
+            [location.name for location in locations],
+            ["P1S - AMS A1", "P1S - AMS A1 [Printer 2]"],
+        )
+        self.assertNotEqual(first.location_id, second.location_id)
+
+    async def test_adopts_an_identifierless_owned_legacy_location(self):
+        """Plugin ownership plus printer and slot metadata is safe to migrate."""
+        spool_id = await self._spool_carrying({})
+        async with self.sessions() as db:
+            legacy = Location(
+                name="Previous Printer Name - AMS A1",
+                custom_fields={
+                    "managed_by": "bambulab_plugin",
+                    "printer_id": 1,
+                },
+            )
+            db.add(legacy)
+            await db.commit()
+            await db.refresh(legacy)
+            legacy_id = legacy.id
+
+        await self.driver._update_spool_location(spool_id, 0, 0)
+
+        async with self.sessions() as db:
+            locations = list((await db.execute(select(Location))).scalars())
+
+        self.assertEqual(len(locations), 1)
+        self.assertEqual(locations[0].id, legacy_id)
+        self.assertEqual(locations[0].identifier, "bambulab_1_0_0")
+        self.assertEqual(locations[0].name, "Test Printer - AMS A1")
+        self.assertEqual(locations[0].custom_fields["printer_id"], 1)
+
+    async def test_adopts_the_unambiguous_old_fallback_name(self):
+        """The exact historical Printer <id> name is a conservative fallback."""
+        spool_id = await self._spool_carrying({})
+        async with self.sessions() as db:
+            legacy = Location(name="Printer 1 - AMS A1", custom_fields={})
+            db.add(legacy)
+            await db.commit()
+            await db.refresh(legacy)
+            legacy_id = legacy.id
+
+        await self.driver._update_spool_location(spool_id, 0, 0)
+
+        async with self.sessions() as db:
+            locations = list((await db.execute(select(Location))).scalars())
+
+        self.assertEqual(len(locations), 1)
+        self.assertEqual(locations[0].id, legacy_id)
+        self.assertEqual(locations[0].identifier, "bambulab_1_0_0")
+        self.assertEqual(
+            locations[0].custom_fields["managed_by"], "bambulab_plugin"
+        )
+
+    async def test_does_not_adopt_an_unowned_manual_location(self):
+        """A matching visible name alone is not permission to take ownership."""
+        spool_id = await self._spool_carrying({})
+        async with self.sessions() as db:
+            manual = Location(name="Test Printer - AMS A1", custom_fields={})
+            db.add(manual)
+            await db.commit()
+            await db.refresh(manual)
+            manual_id = manual.id
+
+        await self.driver._update_spool_location(spool_id, 0, 0)
+
+        async with self.sessions() as db:
+            locations = list(
+                (await db.execute(select(Location).order_by(Location.id))).scalars()
+            )
+
+        self.assertEqual(len(locations), 2)
+        self.assertEqual(locations[0].id, manual_id)
+        self.assertIsNone(locations[0].identifier)
+        self.assertEqual(locations[0].custom_fields, {})
+        self.assertEqual(locations[1].identifier, "bambulab_1_0_0")
+        self.assertEqual(
+            locations[1].name,
+            "Test Printer - AMS A1 [Printer 1]",
+        )
+
     async def test_releasing_an_unknown_location_does_nothing(self):
         """Nothing to clean up before the driver ever assigned that tray."""
         spool_id = await self._spool_carrying({})
@@ -1825,6 +1948,41 @@ class PrinterNameTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             driver._generate_slot_location_name(255, 254), "X1C - ext. Slot 1"
         )
+
+    async def test_loads_printer_name_before_mqtt_can_deliver_slots(self):
+        """The first MQTT snapshot must already use the final display name."""
+        driver, _ = make_driver()
+        order = []
+
+        class FakeMqttClient:
+            def __init__(self):
+                self._client = self
+                self.on_connect_handler = None
+                self.on_message_handler = None
+                self.on_disconnect_handler = None
+
+            def reconnect_delay_set(self, **_kwargs):
+                return None
+
+        class FakeBambuPrinter:
+            def __init__(self):
+                self.mqtt_client = FakeMqttClient()
+
+            def mqtt_start(self):
+                order.append(("mqtt", driver._printer_name))
+
+        async def load_name():
+            order.append(("name", None))
+            return "X1C"
+
+        driver._load_printer_name = load_name
+        driver._ensure_rfid_extra_fields = AsyncMock()
+        fake_printer = FakeBambuPrinter()
+
+        with patch("bambulabs_api.Printer", return_value=fake_printer):
+            await driver.start()
+
+        self.assertEqual(order, [("name", None), ("mqtt", "X1C")])
 
 
 if __name__ == "__main__":

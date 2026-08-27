@@ -92,6 +92,11 @@ class Driver(
         self._loop = asyncio.get_running_loop()
         self._auto_import_lock = asyncio.Lock()
 
+        # Load the display name before MQTT can deliver the first tray update.
+        # Otherwise a fast push_status message may create a temporary
+        # "Printer <id>" location before the real name is available.
+        self._printer_name = await self._load_printer_name()
+
         self._printer = BambuPrinter(
             ip_address=self._host,
             access_code=self._access_code,
@@ -115,9 +120,6 @@ class Driver(
         logger.info(
             f"Bambu driver started for printer {self.printer_id} at {self._host}"
         )
-
-        # Printer-Namen aus DB laden für Location-Generierung
-        self._printer_name = await self._load_printer_name()
 
         await self._ensure_rfid_extra_fields()
         if self._resolve_shop_images:

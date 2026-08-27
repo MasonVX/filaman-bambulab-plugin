@@ -10,7 +10,7 @@ import time
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm.attributes import flag_modified
 
@@ -457,6 +457,143 @@ class SpoolSyncMixin:
             slot_label = chr(65 + tray_id)  # 65 = 'A' in ASCII
             return f"{printer_name} - AMS {slot_label}{ams_id + 1}"
 
+    def _generate_slot_location_identifier(self, ams_id: int, tray_id: int) -> str:
+        """Return the stable database identity for one physical printer slot."""
+        return f"bambulab_{self.printer_id}_{ams_id}_{tray_id}"
+
+    def _generate_legacy_slot_location_name(self, ams_id: int, tray_id: int) -> str:
+        """Return the fallback name used before printer names loaded correctly."""
+        current_printer_name = self._printer_name or f"Printer {self.printer_id}"
+        current_name = self._generate_slot_location_name(ams_id, tray_id)
+        prefix = f"{current_printer_name} - "
+        suffix = current_name.removeprefix(prefix)
+        return f"Printer {self.printer_id} - {suffix}"
+
+    def _adopt_legacy_slot_location(
+        self, location: Location, identifier: str
+    ) -> Location:
+        """Attach stable identity and current ownership metadata to a legacy row."""
+        location.identifier = identifier
+        self._refresh_slot_location_metadata(location)
+        logger.info(
+            "Adopted legacy Bambu slot location '%s' as %s",
+            location.name,
+            identifier,
+        )
+        return location
+
+    def _refresh_slot_location_metadata(self, location: Location) -> None:
+        """Ensure a managed slot records its current plugin ownership."""
+        custom_fields = (
+            dict(location.custom_fields)
+            if isinstance(location.custom_fields, dict)
+            else {}
+        )
+        custom_fields.update(
+            {
+                "managed_by": "bambulab_plugin",
+                "printer_id": self.printer_id,
+            }
+        )
+        location.custom_fields = custom_fields
+
+    async def _find_slot_location(
+        self, db, ams_id: int, tray_id: int
+    ) -> Location | None:
+        """Find the stable slot or conservatively adopt an owned legacy row."""
+        identifier = self._generate_slot_location_identifier(ams_id, tray_id)
+        result = await db.execute(
+            select(Location).where(Location.identifier == identifier)
+        )
+        location = result.scalar_one_or_none()
+        if location is not None:
+            self._refresh_slot_location_metadata(location)
+            return location
+
+        # Current plugin versions always set an identifier. Only identifier-less
+        # rows can be legacy candidates; a manual or foreign location with its
+        # own identity must never be taken over merely because its name matches.
+        result = await db.execute(
+            select(Location).where(
+                or_(Location.identifier.is_(None), Location.identifier == "")
+            )
+        )
+        candidates = list(result.scalars().all())
+        legacy_name = self._generate_legacy_slot_location_name(ams_id, tray_id)
+        slot_suffix = legacy_name.split(" - ", 1)[-1]
+        managed_candidates = []
+        for candidate in candidates:
+            custom_fields = candidate.custom_fields or {}
+            if not isinstance(custom_fields, dict):
+                continue
+            if custom_fields.get("managed_by") != "bambulab_plugin":
+                continue
+            if str(custom_fields.get("printer_id")) != str(self.printer_id):
+                continue
+            if not str(candidate.name or "").casefold().endswith(
+                f" - {slot_suffix}".casefold()
+            ):
+                continue
+            managed_candidates.append(candidate)
+
+        if len(managed_candidates) == 1:
+            return self._adopt_legacy_slot_location(
+                managed_candidates[0], identifier
+            )
+        if len(managed_candidates) > 1:
+            logger.warning(
+                "Multiple identifier-less Bambu locations claim printer %s; "
+                "not adopting any for slot %s-%s",
+                self.printer_id,
+                ams_id,
+                tray_id,
+            )
+            return None
+
+        name_candidates = [
+            candidate
+            for candidate in candidates
+            if str(candidate.name or "").casefold() == legacy_name.casefold()
+        ]
+        if len(name_candidates) == 1:
+            return self._adopt_legacy_slot_location(name_candidates[0], identifier)
+        if len(name_candidates) > 1:
+            logger.warning(
+                "Multiple locations match legacy Bambu slot name '%s'; "
+                "not adopting any",
+                legacy_name,
+            )
+        return None
+
+    async def _unique_slot_location_name(
+        self,
+        db,
+        preferred_name: str,
+        identifier: str,
+    ) -> str:
+        """Keep names readable while separating equally named printers."""
+        result = await db.execute(select(Location))
+        locations = list(result.scalars().all())
+
+        def name_is_used_elsewhere(candidate_name: str) -> bool:
+            return any(
+                str(location.name or "").casefold() == candidate_name.casefold()
+                and location.identifier != identifier
+                for location in locations
+            )
+
+        if not name_is_used_elsewhere(preferred_name):
+            return preferred_name
+
+        collision_name = f"{preferred_name} [Printer {self.printer_id}]"
+        suffix = 2
+        while name_is_used_elsewhere(collision_name):
+            collision_name = (
+                f"{preferred_name} [Printer {self.printer_id} #{suffix}]"
+            )
+            suffix += 1
+        return collision_name
+
     async def _clear_slot_location(
         self, db, location: Location, location_name: str, keep_spool_id: int | None
     ) -> int:
@@ -495,19 +632,18 @@ class SpoolSyncMixin:
         slot_location_name = self._generate_slot_location_name(ams_id, tray_id)
         try:
             async with async_session_maker() as db:
-                result = await db.execute(
-                    select(Location).where(
-                        func.lower(Location.name) == slot_location_name.lower()
-                    )
-                )
-                location = result.scalar_one_or_none()
+                location = await self._find_slot_location(db, ams_id, tray_id)
                 if location is None:
                     return
-                released = await self._clear_slot_location(
-                    db, location, slot_location_name, keep_spool_id=None
+                await self._clear_slot_location(
+                    db,
+                    location,
+                    location.name or slot_location_name,
+                    keep_spool_id=None,
                 )
-                if released:
-                    await db.commit()
+                # Also persists a conservative legacy-location adoption even if
+                # the already-empty location contained no spool to release.
+                await db.commit()
         except Exception as e:
             logger.error(
                 f"Failed to release location for slot {ams_id}-{tray_id}: {e}",
@@ -523,22 +659,24 @@ class SpoolSyncMixin:
         Nutzt SpoolService.move_location() für konsistente Event-Generierung.
         """
         try:
-            slot_location_name = self._generate_slot_location_name(ams_id, tray_id)
+            preferred_name = self._generate_slot_location_name(ams_id, tray_id)
+            identifier = self._generate_slot_location_identifier(ams_id, tray_id)
 
             async with async_session_maker() as db:
-                # 1. Location suchen (case-insensitive)
-                result = await db.execute(
-                    select(Location).where(
-                        func.lower(Location.name) == slot_location_name.lower()
-                    )
+                # The identifier represents the physical slot. Its display name
+                # may change when the printer is renamed and is not an identity.
+                location = await self._find_slot_location(db, ams_id, tray_id)
+                slot_location_name = await self._unique_slot_location_name(
+                    db,
+                    preferred_name,
+                    identifier,
                 )
-                location = result.scalar_one_or_none()
 
                 # 2. Location erstellen falls nicht vorhanden
                 if not location:
                     location = Location(
                         name=slot_location_name,
-                        identifier=f"bambulab_{self.printer_id}_{ams_id}_{tray_id}",
+                        identifier=identifier,
                         custom_fields={
                             "managed_by": "bambulab_plugin",
                             "printer_id": self.printer_id,
@@ -547,6 +685,13 @@ class SpoolSyncMixin:
                     db.add(location)
                     await db.flush()  # Für location.id
                     logger.info(f"Created location: {slot_location_name}")
+                elif location.name != slot_location_name:
+                    logger.info(
+                        "Renamed managed location '%s' to '%s'",
+                        location.name,
+                        slot_location_name,
+                    )
+                    location.name = slot_location_name
 
                 # 3. Spule zur Location bewegen (wenn nicht bereits dort)
                 spool = await db.get(Spool, filaman_spool_id)

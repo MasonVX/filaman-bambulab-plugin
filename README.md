@@ -80,7 +80,7 @@ An all-zero `tray_uuid` placeholder from a custom or non-RFID spool is ignored. 
 
 Read-only mode and automatic import are independent: enabling both lets the plugin read the AMS and update FilaMan while preventing changes to the printer.
 
-After a successful writable spool-to-tray assignment, the plugin creates or reuses a FilaMan location for that printer and AMS slot and moves the assigned spool there. Read-only mode does not perform an assignment and therefore does not change the spool location.
+FilaMan locations for printer slots use a stable internal identifier based on the printer and slot IDs. The visible location name contains the printer name and is updated safely when that printer is renamed; equally named printers receive distinct locations. This prevents MQTT startup timing and display-name changes from creating or reusing the wrong AMS location. Identifier-less legacy locations are adopted only when plugin ownership and the printer/slot match, or when one location unambiguously uses the historical `Printer <id> - ...` name. Manual and foreign locations are not claimed by name alone.
 
 ## Spool Gallery, AMS Overview and Catalog Images
 
