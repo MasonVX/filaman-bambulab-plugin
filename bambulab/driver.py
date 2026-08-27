@@ -86,13 +86,13 @@ class Driver(
 
     async def start(self) -> None:
         """Start MQTT connectivity and optional background services."""
-        from bambulabs_api import Printer
+        from bambulabs_api import Printer as BambuPrinter
 
         self._running = True
         self._loop = asyncio.get_running_loop()
         self._auto_import_lock = asyncio.Lock()
 
-        self._printer = Printer(
+        self._printer = BambuPrinter(
             ip_address=self._host,
             access_code=self._access_code,
             serial=self._serial,
@@ -117,19 +117,26 @@ class Driver(
         )
 
         # Printer-Namen aus DB laden für Location-Generierung
-        try:
-            async with async_session_maker() as db:
-                printer = await db.get(Printer, self.printer_id)
-                self._printer_name = (
-                    printer.name if printer else f"Printer {self.printer_id}"
-                )
-        except Exception as e:
-            logger.warning(f"Failed to load printer name: {e}")
-            self._printer_name = f"Printer {self.printer_id}"
+        self._printer_name = await self._load_printer_name()
 
         await self._ensure_rfid_extra_fields()
         if self._resolve_shop_images:
             await self._register_inventory_enrichment()
+
+    async def _load_printer_name(self) -> str:
+        """Der Anzeigename des Druckers, sonst seine Id.
+
+        Steht in einer eigenen Methode, damit der Name des Datenbankmodells hier
+        nicht mit dem gleichnamigen Client aus bambulabs_api kollidieren kann.
+        """
+        fallback = f"Printer {self.printer_id}"
+        try:
+            async with async_session_maker() as db:
+                printer = await db.get(Printer, self.printer_id)
+                return printer.name if printer else fallback
+        except Exception as e:
+            logger.warning(f"Failed to load printer name: {e}")
+            return fallback
 
     async def stop(self) -> None:
         """Stop background services, pending assignments and MQTT connectivity."""
