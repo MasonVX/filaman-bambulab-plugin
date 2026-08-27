@@ -10,6 +10,13 @@
       document.documentElement.dataset.theme = localStorage.getItem('theme') || 'brand';
       const language = (localStorage.getItem('lang') || navigator.language || 'en').toLowerCase().split('-')[0];
       document.documentElement.lang = language === 'de' ? 'de' : 'en';
+      /* FilaMan has shown plugin pages inside its own shell since 1.2.45, with
+         its navigation standing beside them. The way back is part of that
+         shell, and history.back() has no stop to return to inside the frame.
+         Settled here, before the first paint, so the row never flashes up. */
+      if (window.self !== window.top) {
+        document.documentElement.classList.add('in-filaman-shell');
+      }
     })();
   </script>
   <style>
@@ -99,6 +106,8 @@
 
     .shell { width: min(1440px, calc(100% - 32px)); margin: 0 auto; padding: 28px 0 56px; }
     .page-nav { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 28px; }
+    /* The whole row, so its margin goes with it and the heading moves up. */
+    .in-filaman-shell .page-nav { display: none; }
     .back-btn { text-decoration: none; }
 
     .hero {
