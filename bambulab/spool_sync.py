@@ -250,6 +250,18 @@ class SpoolSyncMixin:
             lambda: asyncio.create_task(self._auto_import_rfid_spools(candidates))
         )
 
+    def _schedule_slot_location_release(self, slot_index: str) -> None:
+        """Queue the location cleanup for a tray that just went empty."""
+        parsed = self._parse_slot_index(slot_index)
+        if not parsed or not self._loop:
+            return
+        ams_id, tray_id = parsed
+        self._loop.call_soon_threadsafe(
+            lambda: asyncio.create_task(
+                self._release_slot_location(ams_id, tray_id)
+            )
+        )
+
     async def _auto_import_rfid_spools(
         self, slots: list[dict[str, Any]]
     ) -> None:
@@ -430,6 +442,63 @@ class SpoolSyncMixin:
             slot_label = chr(65 + tray_id)  # 65 = 'A' in ASCII
             return f"{printer_name} - AMS {slot_label}{ams_id + 1}"
 
+    async def _clear_slot_location(
+        self, db, location: Location, location_name: str, keep_spool_id: int | None
+    ) -> int:
+        """Nimmt den Lagerort von jeder Spule, die nicht mehr darin liegt."""
+        result = await db.execute(
+            select(Spool).where(Spool.location_id == location.id)
+        )
+        stale = [
+            spool
+            for spool in result.scalars().all()
+            if spool.id != keep_spool_id
+        ]
+        if not stale:
+            return 0
+        service = SpoolService(db)
+        for spool in stale:
+            await service.move_location(
+                spool,
+                None,
+                datetime.now(timezone.utc),
+                source="driver",
+                note=f"No longer in {location_name}",
+            )
+            logger.info(
+                "Spool %s left location '%s'", spool.id, location_name
+            )
+        return len(stale)
+
+    async def _release_slot_location(self, ams_id: int, tray_id: int) -> None:
+        """Räumt den Lagerort eines Trays, aus dem die Spule gezogen wurde.
+
+        Ein leeres Tray sagt nichts mehr darüber aus, wo die Spule liegt. Ohne
+        dieses Aufräumen behauptet FilaMan weiterhin, sie sei im AMS, und der
+        Lagerort sammelt über die Zeit jede Spule, die je darin lag.
+        """
+        slot_location_name = self._generate_slot_location_name(ams_id, tray_id)
+        try:
+            async with async_session_maker() as db:
+                result = await db.execute(
+                    select(Location).where(
+                        func.lower(Location.name) == slot_location_name.lower()
+                    )
+                )
+                location = result.scalar_one_or_none()
+                if location is None:
+                    return
+                released = await self._clear_slot_location(
+                    db, location, slot_location_name, keep_spool_id=None
+                )
+                if released:
+                    await db.commit()
+        except Exception as e:
+            logger.error(
+                f"Failed to release location for slot {ams_id}-{tray_id}: {e}",
+                exc_info=True,
+            )
+
     async def _update_spool_location(
         self, filaman_spool_id: int, ams_id: int, tray_id: int
     ) -> None:
@@ -472,10 +541,17 @@ class SpoolSyncMixin:
                     )
                     return
 
+                # Ein Tray hält eine Spule. Wer sonst noch auf diesem Lagerort
+                # steht, lag früher einmal darin und liegt längst woanders.
+                await self._clear_slot_location(
+                    db, location, slot_location_name, keep_spool_id=filaman_spool_id
+                )
+
                 if spool.location_id == location.id:
                     logger.debug(
                         f"Spool {filaman_spool_id} already at location '{slot_location_name}'"
                     )
+                    await db.commit()
                     return
 
                 # SpoolService für konsistente Event-Generierung nutzen
