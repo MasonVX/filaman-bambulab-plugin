@@ -1283,16 +1283,17 @@ class AutoImportDatabaseTests(unittest.IsolatedAsyncioTestCase):
         # additionally gate whether a shop-image lookup is scheduled.
         self.driver._resolve_shop_images = True
         captured: list[dict] = []
+        refreshed = asyncio.Event()
 
         async def fake_refresh(slots):
             captured.extend(slots)
+            refreshed.set()
 
         self.driver._refresh_shop_images_for_slots = fake_refresh
         slot = {k: v for k, v in self.slot.items() if k != "tag_uid"}
 
         self.driver._schedule_shop_image_refresh([slot])
-        await asyncio.sleep(0)
-        await asyncio.sleep(0)
+        await asyncio.wait_for(refreshed.wait(), timeout=1)
 
         self.assertEqual(len(captured), 1)
         self.assertEqual(captured[0]["tray_uuid"], slot["tray_uuid"])
