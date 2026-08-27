@@ -14,6 +14,8 @@ from app.models.spool import Spool, SpoolStatus
 
 
 DRIVER_MODULE = importlib.import_module("bambulab.driver")
+STATE_MODULE = importlib.import_module("bambulab.state")
+PendingSpool = STATE_MODULE.PendingSpool
 CATALOG_MODULE = importlib.import_module("bambulab.catalog")
 ENRICHMENT_MODULE = importlib.import_module("bambulab.catalog_enrichment")
 SPOOL_SYNC_MODULE = importlib.import_module("bambulab.spool_sync")
@@ -461,6 +463,102 @@ class SlotProcessingTests(unittest.TestCase):
         self.assertEqual(slot["tray_weight"], "1000")
         self.assertEqual(slot["remain"], 75)
 
+    def test_pending_spool_lands_in_the_slot_even_when_read_only(self):
+        """A spool weighed on the scale has to reach the slot assignment.
+
+        The filament setting only tells the printer about material and colour;
+        the printer knows nothing about FilaMan spools. Without spool_id on the
+        slot the plugin manager has nothing to write, and the tray stays empty
+        in FilaMan no matter how often it is scanned.
+        """
+        driver, _ = make_driver(read_only=True)
+        driver._current_slots = [
+            {
+                "slot_index": "0-0",
+                "slot_name": "AMS 1 - Slot 1",
+                "tray_type": "",
+                "tray_color": "",
+                "tray_info_idx": "",
+                "present": False,
+            }
+        ]
+        driver._pending = PendingSpool(17, {"material_type": "PETG"}, None)
+
+        driver._process_slots(
+            {
+                "print": {
+                    "command": "push_status",
+                    "ams": {
+                        "ams": [
+                            {
+                                "id": "0",
+                                "tray": [
+                                    {
+                                        "id": "0",
+                                        "tray_type": "PETG",
+                                        "tray_color": "ADB1B2FF",
+                                        "tray_info_idx": "GFG02",
+                                        "tray_uuid": "B94E172402D14E4AB97571340E303DBA",
+                                    }
+                                ],
+                            }
+                        ]
+                    },
+                }
+            }
+        )
+
+        slot = driver._current_slots[0]
+        self.assertEqual(slot["spool_id"], 17)
+        self.assertEqual(driver._slot_spool_ids["0-0"], 17)
+        self.assertEqual(
+            driver._spool_ids_by_tray_uuid["B94E172402D14E4AB97571340E303DBA"],
+            17,
+        )
+        self.assertIsNone(driver._pending)
+
+    def test_pending_spool_without_a_tray_uuid_still_lands_in_the_slot(self):
+        """Third-party filament on a Bambu spool reports no readable tag."""
+        driver, _ = make_driver(read_only=True)
+        driver._current_slots = [
+            {
+                "slot_index": "0-0",
+                "slot_name": "AMS 1 - Slot 1",
+                "tray_type": "",
+                "tray_color": "",
+                "tray_info_idx": "",
+                "present": False,
+            }
+        ]
+        driver._pending = PendingSpool(99, {"material_type": "PLA"}, None)
+
+        driver._process_slots(
+            {
+                "print": {
+                    "command": "push_status",
+                    "ams": {
+                        "ams": [
+                            {
+                                "id": "0",
+                                "tray": [
+                                    {
+                                        "id": "0",
+                                        "tray_type": "PLA",
+                                        "tray_color": "00FF00FF",
+                                        "tray_info_idx": "GFL99",
+                                    }
+                                ],
+                            }
+                        ]
+                    },
+                }
+            }
+        )
+
+        self.assertEqual(driver._current_slots[0]["spool_id"], 99)
+        self.assertEqual(driver._slot_spool_ids["0-0"], 99)
+        self.assertEqual(driver._spool_ids_by_tray_uuid, {})
+
     def test_external_location_has_human_slot_number(self):
         driver, _ = make_driver()
         driver._printer_name = "Test Printer"
@@ -551,10 +649,14 @@ class ReadOnlyTests(unittest.IsolatedAsyncioTestCase):
         dispatched = driver._send_filament_setting(0, 0, {"material_type": "PLA"})
         self.assertFalse(dispatched)
 
-    async def test_read_only_ignores_pending_assignment(self):
+    async def test_read_only_keeps_the_assignment_but_sends_nothing(self):
+        """Read-only is about the printer, not about FilaMan's own records."""
         driver, _ = make_driver(read_only=True)
         await driver.assign_pending_spool(42, {"material_type": "PLA"})
-        self.assertIsNone(driver._pending)
+        self.assertIsNotNone(driver._pending)
+        self.assertEqual(driver._pending.spool_id, 42)
+        if driver._pending.timer:
+            driver._pending.timer.cancel()
 
 
 class AutoImportDatabaseTests(unittest.IsolatedAsyncioTestCase):

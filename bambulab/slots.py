@@ -455,11 +455,28 @@ class SlotSupportMixin:
                     f"assigning pending spool {self._pending.spool_id}"
                 )
                 filaman_spool_id = self._pending.spool_id
-                dispatched = self._send_filament_setting(
+                # This is what puts the spool into the slot as far as FilaMan is
+                # concerned: the plugin manager turns slot["spool_id"] into the
+                # PrinterSlotAssignment. The filament setting below only tells
+                # the printer which material it is holding, and the printer has
+                # no idea that FilaMan spools exist.
+                if filaman_spool_id:
+                    new_slot["spool_id"] = filaman_spool_id
+                    self._slot_spool_ids[sid] = filaman_spool_id
+                    pending_tray_uuid = self._normalize_hex_identifier(
+                        new_slot.get("tray_uuid"), 32
+                    )
+                    if pending_tray_uuid:
+                        self._spool_ids_by_tray_uuid[pending_tray_uuid] = (
+                            filaman_spool_id
+                        )
+                self._send_filament_setting(
                     ams_id_parsed, tray_id_parsed, self._pending.filament_data
                 )
-                # Location nach erfolgreichem Auto-Assignment aktualisieren
-                if dispatched and self._loop and filaman_spool_id:
+                # The spool sits in that tray whether or not the printer was
+                # told about it, so the location follows the assignment and not
+                # the MQTT send.
+                if self._loop and filaman_spool_id:
                     self._loop.call_soon_threadsafe(
                         lambda: asyncio.create_task(
                             self._update_spool_location(
