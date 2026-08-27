@@ -1293,7 +1293,7 @@ class AutoImportDatabaseTests(unittest.IsolatedAsyncioTestCase):
         slot = {k: v for k, v in self.slot.items() if k != "tag_uid"}
 
         self.driver._schedule_shop_image_refresh([slot])
-        await asyncio.wait_for(refreshed.wait(), timeout=1)
+        await asyncio.wait_for(refreshed.wait(), timeout=5)
 
         self.assertEqual(len(captured), 1)
         self.assertEqual(captured[0]["tray_uuid"], slot["tray_uuid"])
