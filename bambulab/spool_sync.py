@@ -226,8 +226,13 @@ class SpoolSyncMixin:
         )
 
     def _schedule_auto_import(self, slots: list[dict[str, Any]]) -> None:
-        """Queue eligible RFID trays for a rate-limited asynchronous upsert."""
-        if not self._auto_import_spools or not self._loop or not self._running:
+        """Queue eligible RFID trays for a rate-limited asynchronous lookup.
+
+        Runs whether or not spools may be created: recognising the spool in a
+        tray is what fills the tray-uuid index, and that index is the only
+        thing that puts a spool into a slot.
+        """
+        if not self._loop or not self._running:
             return
 
         now = time.monotonic()
@@ -265,7 +270,13 @@ class SpoolSyncMixin:
     async def _auto_import_rfid_spools(
         self, slots: list[dict[str, Any]]
     ) -> None:
-        """Idempotently create or update FilaMan spools from RFID tray data."""
+        """Recognise the spool in each RFID tray, and import it where allowed.
+
+        Recognition always runs, because the tray-uuid index it fills is what
+        assigns a spool to a slot. ``auto_import_spools`` decides only whether
+        a tray FilaMan does not know may become a new spool, and whether a
+        known one may be written to.
+        """
         if not self._auto_import_lock:
             return
 
@@ -294,6 +305,10 @@ class SpoolSyncMixin:
                     )
 
                     if spool is None:
+                        if not self._auto_import_spools:
+                            # Nothing known and nothing may be created, so this
+                            # tray simply stays unassigned.
+                            continue
                         filament = await self._find_matching_filament(db, slot)
                         if filament is None:
                             logger.warning(
@@ -346,7 +361,7 @@ class SpoolSyncMixin:
                             spool = result.scalar_one_or_none()
                             if spool is None:
                                 raise
-                    else:
+                    elif self._auto_import_spools:
                         custom_fields = dict(spool.custom_fields or {})
                         if tag_uid and not custom_fields.get(BAMBU_RFID_TAG_1_FIELD):
                             custom_fields[BAMBU_RFID_TAG_1_FIELD] = tag_uid
