@@ -1003,6 +1003,24 @@ class AutoImportDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(count, 1)
         self.assertEqual(spool.id, existing_id)
 
+    async def test_import_checks_both_spoolman_tag_locations(self):
+        """An unrelated top-level tag must not hide a matching nested tag."""
+        existing_id = await self._spool_carrying(
+            {
+                "tag": "11111111111111112222222222222222",
+                "spoolman_extra": {
+                    "tag": "AABBCCDDEEFF0011AABBCCDDEEFF0011"
+                },
+            }
+        )
+
+        await self.driver._auto_import_rfid_spools([self.slot])
+
+        async with self.sessions() as db:
+            spools = list((await db.execute(select(Spool))).scalars())
+
+        self.assertEqual([spool.id for spool in spools], [existing_id])
+
     async def test_import_ignores_custom_fields_of_a_different_spool(self):
         """A tag that belongs to another tray must not swallow this import."""
         await self._spool_carrying(

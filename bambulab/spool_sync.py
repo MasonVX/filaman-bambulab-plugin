@@ -138,22 +138,24 @@ class SpoolSyncMixin:
         return selected
 
     @staticmethod
-    def _spoolman_import_tag(custom_fields: Any) -> Any:
-        """The tray uuid that FilaMan's Spoolman import leaves on a spool.
+    def _spoolman_import_tags(custom_fields: Any) -> tuple[Any, ...]:
+        """Possible tray UUIDs left by different Spoolman import versions.
 
         Depending on the age of the import it sits directly under ``tag`` or
-        nested under ``spoolman_extra.tag``.
+        nested under ``spoolman_extra.tag``. Return both because one field may
+        contain unrelated legacy data while the other carries the tray UUID.
         """
         if not isinstance(custom_fields, dict):
-            return None
+            return ()
         extra = custom_fields.get("spoolman_extra")
-        for value in (
-            custom_fields.get("tag"),
-            extra.get("tag") if isinstance(extra, dict) else None,
-        ):
-            if value:
-                return value
-        return None
+        return tuple(
+            value
+            for value in (
+                custom_fields.get("tag"),
+                extra.get("tag") if isinstance(extra, dict) else None,
+            )
+            if value
+        )
 
     def _pick_oldest_match(
         self, matches: list[Spool], tray_uuid: str, carried_in: str
@@ -216,10 +218,12 @@ class SpoolSyncMixin:
             [
                 candidate
                 for candidate in result.scalars().all()
-                if self._normalize_hex_identifier(
-                    self._spoolman_import_tag(candidate.custom_fields), 32
+                if any(
+                    self._normalize_hex_identifier(value, 32) == tray_uuid
+                    for value in self._spoolman_import_tags(
+                        candidate.custom_fields
+                    )
                 )
-                == tray_uuid
             ],
             tray_uuid,
             "custom fields of the Spoolman import",
