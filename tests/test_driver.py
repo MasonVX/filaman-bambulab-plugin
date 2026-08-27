@@ -718,6 +718,83 @@ class AutoImportDatabaseTests(unittest.IsolatedAsyncioTestCase):
             "A1B2C3D4E5F60102",
         )
 
+    async def _spool_carrying(self, custom_fields):
+        """A spool that already exists, holding the tray uuid where given."""
+        async with self.sessions() as db:
+            status_id = await db.scalar(
+                select(SpoolStatus.id).where(SpoolStatus.key == "opened")
+            )
+            spool = Spool(
+                filament_id=self.filament_id,
+                status_id=status_id,
+                remaining_weight_g=1000,
+                custom_fields=custom_fields,
+            )
+            db.add(spool)
+            await db.commit()
+            await db.refresh(spool)
+            return spool.id
+
+    async def test_import_reuses_spool_with_tray_uuid_in_custom_fields(self):
+        """The Spoolman import writes the tray uuid into ``tag``."""
+        existing_id = await self._spool_carrying(
+            {"spoolman_id": 274, "tag": "AABBCCDDEEFF0011AABBCCDDEEFF0011"}
+        )
+
+        await self.driver._auto_import_rfid_spools([self.slot])
+
+        async with self.sessions() as db:
+            count = await db.scalar(select(func.count()).select_from(Spool))
+            spool = (await db.execute(select(Spool))).scalar_one()
+
+        self.assertEqual(count, 1)
+        self.assertEqual(spool.id, existing_id)
+        self.assertEqual(
+            spool.external_id,
+            "bambulab:AABBCCDDEEFF0011AABBCCDDEEFF0011",
+        )
+
+    async def test_import_reuses_spool_with_tray_uuid_in_spoolman_extra(self):
+        """Older imports nest it under ``spoolman_extra``, and may separate it."""
+        existing_id = await self._spool_carrying(
+            {
+                "spoolman_id": "33",
+                "spoolman_extra": {
+                    "tag": "aa:bb:cc:dd:ee:ff:00:11:aa:bb:cc:dd:ee:ff:00:11",
+                    "german_name": "Schwarz",
+                },
+            }
+        )
+
+        await self.driver._auto_import_rfid_spools([self.slot])
+
+        async with self.sessions() as db:
+            count = await db.scalar(select(func.count()).select_from(Spool))
+            spool = (await db.execute(select(Spool))).scalar_one()
+
+        self.assertEqual(count, 1)
+        self.assertEqual(spool.id, existing_id)
+
+    async def test_import_ignores_custom_fields_of_a_different_spool(self):
+        """A tag that belongs to another tray must not swallow this import."""
+        await self._spool_carrying(
+            {"tag": "11111111111111112222222222222222"}
+        )
+
+        await self.driver._auto_import_rfid_spools([self.slot])
+
+        async with self.sessions() as db:
+            count = await db.scalar(select(func.count()).select_from(Spool))
+            imported = await db.scalar(
+                select(Spool).where(
+                    Spool.external_id
+                    == "bambulab:AABBCCDDEEFF0011AABBCCDDEEFF0011"
+                )
+            )
+
+        self.assertEqual(count, 2)
+        self.assertIsNotNone(imported)
+
     async def test_valid_tray_uuid_imports_without_physical_tag_uid(self):
         slot = {**self.slot, "tag_uid": "0000000000000000"}
 

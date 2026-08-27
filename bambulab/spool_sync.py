@@ -137,10 +137,46 @@ class SpoolSyncMixin:
             )
         return selected
 
+    @staticmethod
+    def _spoolman_import_tag(custom_fields: Any) -> Any:
+        """The tray uuid that FilaMan's Spoolman import leaves on a spool.
+
+        Depending on the age of the import it sits directly under ``tag`` or
+        nested under ``spoolman_extra.tag``.
+        """
+        if not isinstance(custom_fields, dict):
+            return None
+        extra = custom_fields.get("spoolman_extra")
+        for value in (
+            custom_fields.get("tag"),
+            extra.get("tag") if isinstance(extra, dict) else None,
+        ):
+            if value:
+                return value
+        return None
+
+    def _pick_oldest_match(
+        self, matches: list[Spool], tray_uuid: str, carried_in: str
+    ) -> Spool | None:
+        """One spool out of the candidates, oldest first, with a word about it."""
+        if not matches:
+            return None
+        if len(matches) > 1:
+            logger.warning(
+                "Multiple FilaMan spools carry Bambu tray_uuid=%s in %s; "
+                "using the oldest spool id", tray_uuid, carried_in
+            )
+        spool = min(matches, key=lambda candidate: candidate.id)
+        logger.info(
+            "Matched existing FilaMan spool %s by %s for Bambu tray_uuid=%s",
+            spool.id, carried_in, tray_uuid
+        )
+        return spool
+
     async def _find_existing_bambu_spool(
         self, db, external_id: str, tray_uuid: str
     ) -> Spool | None:
-        """Find an imported spool by Bambu external ID or legacy RFID UID."""
+        """Find a spool already representing this tray, wherever it carries it."""
         result = await db.execute(
             select(Spool).where(Spool.external_id == external_id)
         )
@@ -155,24 +191,39 @@ class SpoolSyncMixin:
         result = await db.execute(
             select(Spool).where(Spool.rfid_uid.is_not(None))
         )
-        matches = [
-            candidate
-            for candidate in result.scalars().all()
-            if self._normalize_hex_identifier(candidate.rfid_uid, 32) == tray_uuid
-        ]
-        if not matches:
-            return None
-        if len(matches) > 1:
-            logger.warning(
-                "Multiple FilaMan spools have rfid_uid matching Bambu "
-                "tray_uuid=%s; using the oldest spool id", tray_uuid
-            )
-        spool = min(matches, key=lambda candidate: candidate.id)
-        logger.info(
-            "Matched existing FilaMan spool %s by legacy rfid_uid for "
-            "Bambu tray_uuid=%s", spool.id, tray_uuid
+        spool = self._pick_oldest_match(
+            [
+                candidate
+                for candidate in result.scalars().all()
+                if self._normalize_hex_identifier(candidate.rfid_uid, 32)
+                == tray_uuid
+            ],
+            tray_uuid,
+            "rfid_uid",
         )
-        return spool
+        if spool is not None:
+            return spool
+
+        # Spools that reached FilaMan through its Spoolman import keep the tray
+        # uuid in their custom fields, where neither lookup above can see it.
+        # Without this the import treats a spool FilaMan already has as unknown
+        # and creates a second record for the same physical spool, which then
+        # wins every later lookup through its own external_id.
+        result = await db.execute(
+            select(Spool).where(Spool.custom_fields.is_not(None))
+        )
+        return self._pick_oldest_match(
+            [
+                candidate
+                for candidate in result.scalars().all()
+                if self._normalize_hex_identifier(
+                    self._spoolman_import_tag(candidate.custom_fields), 32
+                )
+                == tray_uuid
+            ],
+            tray_uuid,
+            "custom fields of the Spoolman import",
+        )
 
     def _schedule_auto_import(self, slots: list[dict[str, Any]]) -> None:
         """Queue eligible RFID trays for a rate-limited asynchronous upsert."""
