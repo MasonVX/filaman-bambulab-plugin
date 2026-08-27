@@ -1447,5 +1447,55 @@ class AutoImportDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(match)
 
 
+class PrinterNameTests(unittest.IsolatedAsyncioTestCase):
+    """Slot location names are built from the printer's own name.
+
+    Regression guard for the name collision that made every location fall back
+    to "Printer <id>": bambulabs_api also exports a class called ``Printer``,
+    and importing it inside the same function shadowed the database model for
+    that whole function.
+    """
+
+    async def asyncSetUp(self):
+        self.engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+        async with self.engine.begin() as connection:
+            await connection.run_sync(Base.metadata.create_all)
+        self.sessions = async_sessionmaker(self.engine, expire_on_commit=False)
+        self.original_session_maker = DRIVER_MODULE.async_session_maker
+        DRIVER_MODULE.async_session_maker = self.sessions
+        async with self.sessions() as db:
+            db.add(
+                Printer(
+                    id=1,
+                    name="X1C",
+                    driver_key="bambulab",
+                    driver_config={},
+                )
+            )
+            await db.commit()
+
+    async def asyncTearDown(self):
+        DRIVER_MODULE.async_session_maker = self.original_session_maker
+        await self.engine.dispose()
+
+    async def test_reads_the_name_from_the_database(self):
+        driver, _ = make_driver()
+        self.assertEqual(await driver._load_printer_name(), "X1C")
+
+    async def test_falls_back_to_the_id_when_the_printer_is_unknown(self):
+        driver, _ = make_driver(printer_id=99)
+        self.assertEqual(await driver._load_printer_name(), "Printer 99")
+
+    async def test_location_name_carries_the_printer_name(self):
+        driver, _ = make_driver()
+        driver._printer_name = await driver._load_printer_name()
+        self.assertEqual(
+            driver._generate_slot_location_name(0, 0), "X1C - AMS A1"
+        )
+        self.assertEqual(
+            driver._generate_slot_location_name(255, 254), "X1C - ext. Slot 1"
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
