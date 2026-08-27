@@ -401,6 +401,24 @@ class SlotSupportMixin:
                 slot["spool_id"] = None
                 self._slot_spool_ids.pop(slot_index, None)
 
+            # A tray that just went empty no longer says where its spool is.
+            # Compared against the previous state so this fires on the change
+            # and not on every poll of an empty slot.
+            previous = next(
+                (
+                    known
+                    for known in self._current_slots
+                    if str(known.get("slot_index") or "") == slot_index
+                ),
+                None,
+            )
+            if (
+                previous is not None
+                and previous.get("present")
+                and not slot.get("present")
+            ):
+                self._schedule_slot_location_release(slot_index)
+
         # -- Auto-assignment: Tray-Daten-Vergleich (wie C++ Implementierung) --
         # Erkennt wenn sich Tray-Felder ändern (Spule eingelegt/gewechselt).
         # Vergleicht tray_info_idx, tray_type, tray_color, cali_idx und setting_id

@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.models import Color, Filament, FilamentColor, Manufacturer, Printer
 from app.models.base import Base
+from app.models.location import Location
 from app.models.printer_params import FilamentPrinterParam
 from app.models.spool import Spool, SpoolStatus
 
@@ -559,6 +560,59 @@ class SlotProcessingTests(unittest.TestCase):
         self.assertEqual(driver._slot_spool_ids["0-0"], 99)
         self.assertEqual(driver._spool_ids_by_tray_uuid, {})
 
+    def test_tray_going_empty_schedules_the_location_release(self):
+        driver, _ = make_driver(auto_import_spools=False)
+        driver._current_slots = [
+            {
+                "slot_index": "0-0",
+                "slot_name": "AMS 1 - Slot 1",
+                "tray_type": "PLA",
+                "tray_color": "FF0000FF",
+                "tray_info_idx": "GFA00",
+                "present": True,
+            }
+        ]
+        released = []
+        driver._schedule_slot_location_release = released.append
+
+        driver._process_slots(
+            {
+                "print": {
+                    "command": "push_status",
+                    "ams": {"ams": [{"id": "0", "tray": [{"id": "0"}]}]},
+                }
+            }
+        )
+
+        self.assertEqual(released, ["0-0"])
+
+    def test_a_tray_that_stays_empty_is_not_released_again(self):
+        """Otherwise every poll of an empty AMS hits the database."""
+        driver, _ = make_driver(auto_import_spools=False)
+        driver._current_slots = [
+            {
+                "slot_index": "0-0",
+                "slot_name": "AMS 1 - Slot 1",
+                "tray_type": "",
+                "tray_color": "",
+                "tray_info_idx": "",
+                "present": False,
+            }
+        ]
+        released = []
+        driver._schedule_slot_location_release = released.append
+
+        driver._process_slots(
+            {
+                "print": {
+                    "command": "push_status",
+                    "ams": {"ams": [{"id": "0", "tray": [{"id": "0"}]}]},
+                }
+            }
+        )
+
+        self.assertEqual(released, [])
+
     def test_external_location_has_human_slot_number(self):
         driver, _ = make_driver()
         driver._printer_name = "Test Printer"
@@ -896,6 +950,47 @@ class AutoImportDatabaseTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(count, 2)
         self.assertIsNotNone(imported)
+
+    async def test_assigning_a_tray_clears_the_spool_that_was_there(self):
+        """A tray holds one spool, so the previous one has to let go."""
+        first = await self._spool_carrying({})
+        second = await self._spool_carrying({})
+
+        await self.driver._update_spool_location(first, 0, 0)
+        await self.driver._update_spool_location(second, 0, 0)
+
+        async with self.sessions() as db:
+            location = await db.scalar(
+                select(Location).where(
+                    Location.name == "Test Printer - AMS A1"
+                )
+            )
+            left = await db.get(Spool, first)
+            arrived = await db.get(Spool, second)
+
+        self.assertIsNone(left.location_id)
+        self.assertEqual(arrived.location_id, location.id)
+
+    async def test_emptying_a_tray_takes_the_spool_out_of_the_location(self):
+        """An empty tray says nothing about where its spool went."""
+        spool_id = await self._spool_carrying({})
+        await self.driver._update_spool_location(spool_id, 0, 0)
+
+        await self.driver._release_slot_location(0, 0)
+
+        async with self.sessions() as db:
+            spool = await db.get(Spool, spool_id)
+        self.assertIsNone(spool.location_id)
+
+    async def test_releasing_an_unknown_location_does_nothing(self):
+        """Nothing to clean up before the driver ever assigned that tray."""
+        spool_id = await self._spool_carrying({})
+
+        await self.driver._release_slot_location(3, 3)
+
+        async with self.sessions() as db:
+            spool = await db.get(Spool, spool_id)
+        self.assertIsNone(spool.location_id)
 
     async def test_valid_tray_uuid_imports_without_physical_tag_uid(self):
         slot = {**self.slot, "tag_uid": "0000000000000000"}
