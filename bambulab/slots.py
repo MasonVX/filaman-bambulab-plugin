@@ -392,18 +392,6 @@ class SlotSupportMixin:
         slots = ams_slots + ext_slots
         for slot in slots:
             slot_index = str(slot.get("slot_index") or "")
-            tray_uuid = self._normalize_hex_identifier(slot.get("tray_uuid"), 32)
-            if tray_uuid and tray_uuid in self._spool_ids_by_tray_uuid:
-                spool_id = self._spool_ids_by_tray_uuid[tray_uuid]
-                slot["spool_id"] = spool_id
-                self._slot_spool_ids[slot_index] = spool_id
-            elif not slot.get("present") and slot_index in self._slot_spool_ids:
-                slot["spool_id"] = None
-                self._slot_spool_ids.pop(slot_index, None)
-
-            # A tray that just went empty no longer says where its spool is.
-            # Compared against the previous state so this fires on the change
-            # and not on every poll of an empty slot.
             previous = next(
                 (
                     known
@@ -412,12 +400,49 @@ class SlotSupportMixin:
                 ),
                 None,
             )
+            previous_uuid = self._normalize_hex_identifier(
+                previous.get("tray_uuid") if previous else None, 32
+            )
+            tray_uuid = self._normalize_hex_identifier(slot.get("tray_uuid"), 32)
+            spool_was_replaced = bool(
+                previous is not None
+                and previous.get("present")
+                and slot.get("present")
+                and previous_uuid
+                and tray_uuid
+                and previous_uuid != tray_uuid
+            )
+
+            if spool_was_replaced:
+                # The previous slot mapping must never leak into image lookup or
+                # FilaMan's PrinterSlotAssignment for the new tray contents.
+                self._slot_spool_ids.pop(slot_index, None)
+                self._slot_display_metadata.pop(slot_index, None)
+                slot["spool_id"] = None
+
+            known_spool_id: int | None = None
+            if tray_uuid and tray_uuid in self._spool_ids_by_tray_uuid:
+                known_spool_id = self._spool_ids_by_tray_uuid[tray_uuid]
+                slot["spool_id"] = known_spool_id
+                self._slot_spool_ids[slot_index] = known_spool_id
+            elif not slot.get("present") and slot_index in self._slot_spool_ids:
+                slot["spool_id"] = None
+                self._slot_spool_ids.pop(slot_index, None)
+
             if (
                 previous is not None
                 and previous.get("present")
                 and not slot.get("present")
             ):
                 self._schedule_slot_location_release(slot_index)
+            elif spool_was_replaced:
+                if known_spool_id is not None:
+                    self._schedule_slot_location_update(
+                        slot_index,
+                        known_spool_id,
+                    )
+                else:
+                    self._schedule_slot_location_release(slot_index)
 
         # -- Auto-assignment: Tray-Daten-Vergleich (wie C++ Implementierung) --
         # Erkennt wenn sich Tray-Felder ändern (Spule eingelegt/gewechselt).

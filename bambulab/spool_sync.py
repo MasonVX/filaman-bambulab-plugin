@@ -267,6 +267,24 @@ class SpoolSyncMixin:
             )
         )
 
+    def _schedule_slot_location_update(
+        self, slot_index: str, spool_id: int
+    ) -> None:
+        """Queue a known replacement spool for its slot location."""
+        parsed = self._parse_slot_index(slot_index)
+        if not parsed or not self._loop:
+            return
+        ams_id, tray_id = parsed
+        self._loop.call_soon_threadsafe(
+            lambda: asyncio.create_task(
+                self._update_spool_location(
+                    spool_id,
+                    ams_id,
+                    tray_id,
+                )
+            )
+        )
+
     async def _auto_import_rfid_spools(
         self, slots: list[dict[str, Any]]
     ) -> None:

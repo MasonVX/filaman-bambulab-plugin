@@ -614,6 +614,77 @@ class SlotProcessingTests(unittest.TestCase):
 
         self.assertEqual(released, [])
 
+    @staticmethod
+    def _swap_driver(replacement_spool_id=None):
+        """Build one occupied slot plus optional cached replacement UUID."""
+        first_uuid = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+        second_uuid = "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"
+        driver, _ = make_driver(auto_import_spools=False)
+        driver._current_slots = [
+            {
+                "slot_index": "0-0",
+                "tray_type": "PLA",
+                "tray_color": "FF0000FF",
+                "tray_info_idx": "GFA00",
+                "tray_uuid": first_uuid,
+                "present": True,
+                "spool_id": 17,
+            }
+        ]
+        driver._slot_spool_ids = {"0-0": 17}
+        driver._spool_ids_by_tray_uuid = {first_uuid: 17}
+        if replacement_spool_id is not None:
+            driver._spool_ids_by_tray_uuid[second_uuid] = replacement_spool_id
+        driver._slot_display_metadata = {"0-0": {"shop_image_url": "old"}}
+        released = []
+        updated = []
+        driver._schedule_slot_location_release = released.append
+        driver._schedule_slot_location_update = (
+            lambda *args: updated.append(args)
+        )
+        driver._process_slots(
+            {
+                "print": {
+                    "ams": {
+                        "ams": [
+                            {
+                                "id": "0",
+                                "tray": [
+                                    {
+                                        "id": "0",
+                                        "tray_type": "PLA",
+                                        "tray_color": "FF0000FF",
+                                        "tray_info_idx": "GFA00",
+                                        "tray_uuid": second_uuid,
+                                    }
+                                ],
+                            }
+                        ]
+                    }
+                }
+            }
+        )
+        return driver, released, updated
+
+    def test_direct_unknown_spool_swap_clears_the_previous_assignment(self):
+        """A present-to-present UUID change must not retain spool A for spool B."""
+        driver, released, updated = self._swap_driver()
+
+        self.assertEqual(driver._slot_spool_ids, {})
+        self.assertIsNone(driver._current_slots[0]["spool_id"])
+        self.assertNotIn("0-0", driver._slot_display_metadata)
+        self.assertEqual(released, ["0-0"])
+        self.assertEqual(updated, [])
+
+    def test_direct_known_spool_swap_assigns_the_replacement(self):
+        """A cached tray UUID can move spool B into the slot immediately."""
+        driver, released, updated = self._swap_driver(replacement_spool_id=18)
+
+        self.assertEqual(driver._slot_spool_ids, {"0-0": 18})
+        self.assertEqual(driver._current_slots[0]["spool_id"], 18)
+        self.assertEqual(released, [])
+        self.assertEqual(updated[0][:2], ("0-0", 18))
+
     def test_external_location_has_human_slot_number(self):
         driver, _ = make_driver()
         driver._printer_name = "Test Printer"
