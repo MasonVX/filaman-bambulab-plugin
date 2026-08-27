@@ -992,6 +992,62 @@ class AutoImportDatabaseTests(unittest.IsolatedAsyncioTestCase):
             spool = await db.get(Spool, spool_id)
         self.assertIsNone(spool.location_id)
 
+    def _reading_driver(self):
+        """A driver that may recognise spools but not create or change them."""
+        driver, _ = make_driver(auto_import_spools=False, sync_spool_weight=True)
+        driver._loop = asyncio.get_running_loop()
+        driver._auto_import_lock = asyncio.Lock()
+        driver._printer_name = "Test Printer"
+        driver._current_slots = [dict(self.slot)]
+        return driver
+
+    async def test_recognises_a_known_spool_without_importing(self):
+        """Recognition is what assigns the slot, so it cannot depend on import."""
+        driver = self._reading_driver()
+        async with self.sessions() as db:
+            status_id = await db.scalar(
+                select(SpoolStatus.id).where(SpoolStatus.key == "opened")
+            )
+            known = Spool(
+                filament_id=self.filament_id,
+                status_id=status_id,
+                rfid_uid="AABBCCDDEEFF0011AABBCCDDEEFF0011",
+                remaining_weight_g=1000,
+                custom_fields={},
+            )
+            db.add(known)
+            await db.commit()
+            await db.refresh(known)
+            known_id = known.id
+
+        await driver._auto_import_rfid_spools([self.slot])
+
+        self.assertEqual(
+            driver._spool_ids_by_tray_uuid,
+            {"AABBCCDDEEFF0011AABBCCDDEEFF0011": known_id},
+        )
+        self.assertEqual(driver._slot_spool_ids, {"0-0": known_id})
+
+        async with self.sessions() as db:
+            count = await db.scalar(select(func.count()).select_from(Spool))
+            untouched = await db.get(Spool, known_id)
+
+        self.assertEqual(count, 1)
+        self.assertIsNone(untouched.external_id)
+        self.assertEqual(untouched.remaining_weight_g, 1000)
+        self.assertEqual(untouched.custom_fields, {})
+
+    async def test_unknown_tray_creates_nothing_without_the_import(self):
+        driver = self._reading_driver()
+
+        await driver._auto_import_rfid_spools([self.slot])
+
+        async with self.sessions() as db:
+            count = await db.scalar(select(func.count()).select_from(Spool))
+
+        self.assertEqual(count, 0)
+        self.assertEqual(driver._spool_ids_by_tray_uuid, {})
+
     async def test_valid_tray_uuid_imports_without_physical_tag_uid(self):
         slot = {**self.slot, "tag_uid": "0000000000000000"}
 
