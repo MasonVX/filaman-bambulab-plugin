@@ -357,13 +357,13 @@ class Driver(
         slot_index: str | None = None,
         timeout_seconds: int | None = None,
     ) -> None:
-        """Spule für automatische Zuweisung vormerken."""
-        if self._read_only:
-            logger.info(
-                f"Read-only mode: ignored pending spool {spool_id} for printer "
-                f"{self.printer_id}"
-            )
-            return
+        """Spule für automatische Zuweisung vormerken.
+
+        Read-only stops MQTT commands, not bookkeeping. The assignment itself
+        is written to FilaMan's own database, so it is kept here and only the
+        filament setting further down is suppressed - the same rule the RFID
+        auto-import already follows.
+        """
         if self._pending and self._pending.timer:
             self._pending.timer.cancel()
 
