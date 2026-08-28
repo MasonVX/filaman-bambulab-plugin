@@ -685,6 +685,25 @@ class SlotProcessingTests(unittest.TestCase):
         self.assertEqual(released, [])
         self.assertEqual(updated[0][:2], ("0-0", 18))
 
+    def test_slot_label_follows_bambu_unit_then_bay(self):
+        """First unit is A1 to A4, second is B1 to B4, as the printer says."""
+        driver, _ = make_driver()
+        self.assertEqual(driver._slot_label(0, 0), "A1")
+        self.assertEqual(driver._slot_label(0, 1), "A2")
+        self.assertEqual(driver._slot_label(0, 3), "A4")
+        self.assertEqual(driver._slot_label(1, 0), "B1")
+        self.assertEqual(driver._slot_label(1, 3), "B4")
+
+    def test_location_name_matches_its_own_documented_example(self):
+        driver, _ = make_driver()
+        driver._printer_name = "Bambu P1S"
+        self.assertEqual(
+            driver._generate_slot_location_name(0, 1), "Bambu P1S - AMS A2"
+        )
+        self.assertEqual(
+            driver._generate_slot_location_name(1, 0), "Bambu P1S - AMS B1"
+        )
+
     def test_external_location_has_human_slot_number(self):
         driver, _ = make_driver()
         driver._printer_name = "Test Printer"
@@ -1040,6 +1059,78 @@ class AutoImportDatabaseTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(count, 2)
         self.assertIsNotNone(imported)
+
+    async def _slot_location(self, identifier: str, name: str) -> int:
+        """A location standing for one printer slot, named as given."""
+        async with self.sessions() as db:
+            location = Location(
+                name=name,
+                identifier=identifier,
+                custom_fields={
+                    "managed_by": "bambulab_plugin",
+                    "printer_id": 1,
+                },
+            )
+            db.add(location)
+            await db.commit()
+            await db.refresh(location)
+            return location.id
+
+    async def test_relabels_the_bays_it_named_the_wrong_way_round(self):
+        swapped = await self._slot_location(
+            "bambulab_1_0_1", "Test Printer - AMS B1"
+        )
+        other_unit = await self._slot_location(
+            "bambulab_1_1_0", "Test Printer - AMS A2"
+        )
+
+        await self.driver.rename_swapped_slot_locations()
+
+        async with self.sessions() as db:
+            self.assertEqual(
+                (await db.get(Location, swapped)).name, "Test Printer - AMS A2"
+            )
+            self.assertEqual(
+                (await db.get(Location, other_unit)).name, "Test Printer - AMS B1"
+            )
+
+    async def test_relabels_a_bay_left_with_the_fallback_printer_name(self):
+        location_id = await self._slot_location(
+            "bambulab_1_0_1", "Printer 1 - AMS B1"
+        )
+
+        await self.driver.rename_swapped_slot_locations()
+
+        async with self.sessions() as db:
+            self.assertEqual(
+                (await db.get(Location, location_id)).name, "Test Printer - AMS A2"
+            )
+
+    async def test_leaves_a_name_somebody_chose_by_hand(self):
+        location_id = await self._slot_location("bambulab_1_0_1", "Trockenbox")
+
+        await self.driver.rename_swapped_slot_locations()
+
+        async with self.sessions() as db:
+            self.assertEqual((await db.get(Location, location_id)).name, "Trockenbox")
+
+    async def test_leaves_ht_and_external_bays_alone(self):
+        ht = await self._slot_location(
+            "bambulab_1_128_0", "Test Printer - AMS HT 1 - Slot 1"
+        )
+        external = await self._slot_location(
+            "bambulab_1_255_254", "Test Printer - ext. Slot 1"
+        )
+
+        await self.driver.rename_swapped_slot_locations()
+
+        async with self.sessions() as db:
+            self.assertEqual(
+                (await db.get(Location, ht)).name, "Test Printer - AMS HT 1 - Slot 1"
+            )
+            self.assertEqual(
+                (await db.get(Location, external)).name, "Test Printer - ext. Slot 1"
+            )
 
     async def test_assigning_a_tray_clears_the_spool_that_was_there(self):
         """A tray holds one spool, so the previous one has to let go."""

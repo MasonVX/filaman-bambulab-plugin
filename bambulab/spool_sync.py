@@ -460,7 +460,7 @@ class SpoolSyncMixin:
         """Generiert Location-Namen für AMS-Slot.
 
         Format:
-        - AMS Slots: "{Drucker Name} - AMS {A-D}{ams_id+1}"
+        - AMS Slots: "{Drucker Name} - AMS {A-D}{tray_id+1}"
         - External Slots: "{Drucker Name} - ext. Slot {tray_id+1}"
 
         Beispiele:
@@ -475,9 +475,25 @@ class SpoolSyncMixin:
         elif ams_id >= 128:  # AMS HT units are numbered from protocol id 128
             return f"{printer_name} - AMS HT {ams_id - 127} - Slot {tray_id + 1}"
         else:
-            # AMS slots: A1, B1, C1, D1, A2, B2, ... (tray_id 0-3)
-            slot_label = chr(65 + tray_id)  # 65 = 'A' in ASCII
-            return f"{printer_name} - AMS {slot_label}{ams_id + 1}"
+            return f"{printer_name} - AMS {self._slot_label(ams_id, tray_id)}"
+
+    @staticmethod
+    def _slot_label(ams_id: int, tray_id: int) -> str:
+        """Bambu's own label for a bay: unit as a letter, bay as a digit.
+
+        The first AMS holds A1 to A4, the second B1 to B4, which is what the
+        printer, Bambu Studio and the handbook all say.
+        """
+        return f"{chr(65 + ams_id)}{tray_id + 1}"  # 65 = 'A' in ASCII
+
+    @staticmethod
+    def _swapped_slot_label(ams_id: int, tray_id: int) -> str:
+        """The label this plugin produced while the two were the wrong way round.
+
+        Only needed to recognise names it wrote itself, so they can be put
+        right without touching a name somebody chose by hand.
+        """
+        return f"{chr(65 + tray_id)}{ams_id + 1}"
 
     def _generate_slot_location_identifier(self, ams_id: int, tray_id: int) -> str:
         """Return the stable database identity for one physical printer slot."""
@@ -519,6 +535,70 @@ class SpoolSyncMixin:
         )
         location.custom_fields = custom_fields
 
+    def _names_this_plugin_wrote(self, ams_id: int, tray_id: int) -> set[str]:
+        """Every name this plugin gave one AMS bay, across its versions."""
+        fallback_printer = f"Printer {self.printer_id}"
+        printers = {self._printer_name or fallback_printer, fallback_printer}
+        labels = {
+            self._slot_label(ams_id, tray_id),
+            self._swapped_slot_label(ams_id, tray_id),
+        }
+        return {
+            f"{printer} - AMS {label}" for printer in printers for label in labels
+        }
+
+    async def rename_swapped_slot_locations(self) -> None:
+        """Relabel the AMS bays this plugin named with unit and bay swapped.
+
+        Earlier versions built "AMS B1" out of bay 2 of the first unit, where
+        Bambu itself says A2. Sorting those by name walks back and forth
+        between the units, which is what gave it away.
+
+        Run once at startup and only over rows this plugin owns, identified by
+        their stable identifier. A name somebody chose by hand is left alone,
+        because it is no longer one this plugin wrote.
+        """
+        prefix = f"bambulab_{self.printer_id}_"
+        renamed = 0
+        try:
+            async with async_session_maker() as db:
+                result = await db.execute(
+                    select(Location).where(Location.identifier.like(f"{prefix}%"))
+                )
+                for location in result.scalars().all():
+                    parts = str(location.identifier)[len(prefix):].split("_")
+                    if len(parts) != 2:
+                        continue
+                    try:
+                        ams_id, tray_id = int(parts[0]), int(parts[1])
+                    except ValueError:
+                        continue
+                    if ams_id >= 128:  # HT and external labels were never swapped
+                        continue
+                    wanted = self._generate_slot_location_name(ams_id, tray_id)
+                    if location.name == wanted:
+                        continue
+                    if location.name not in self._names_this_plugin_wrote(
+                        ams_id, tray_id
+                    ):
+                        continue
+                    logger.info(
+                        "Renaming Bambu slot location '%s' to '%s'",
+                        location.name,
+                        wanted,
+                    )
+                    location.name = wanted
+                    renamed += 1
+                if renamed:
+                    await db.commit()
+                    logger.info(
+                        "Relabelled %s AMS location(s) for printer %s",
+                        renamed,
+                        self.printer_id,
+                    )
+        except Exception as e:
+            logger.error(f"Failed to relabel AMS locations: {e}", exc_info=True)
+
     async def _find_slot_location(
         self, db, ams_id: int, tray_id: int
     ) -> Location | None:
@@ -542,7 +622,12 @@ class SpoolSyncMixin:
         )
         candidates = list(result.scalars().all())
         legacy_name = self._generate_legacy_slot_location_name(ams_id, tray_id)
-        slot_suffix = legacy_name.split(" - ", 1)[-1]
+        # Both spellings: a row from before this plugin fixed the label order
+        # ends in the swapped one, and refusing it would create a second
+        # location for a slot that already has one.
+        slot_suffixes = {legacy_name.split(" - ", 1)[-1]}
+        if ams_id < 128:
+            slot_suffixes.add(f"AMS {self._swapped_slot_label(ams_id, tray_id)}")
         managed_candidates = []
         for candidate in candidates:
             custom_fields = candidate.custom_fields or {}
@@ -552,8 +637,10 @@ class SpoolSyncMixin:
                 continue
             if str(custom_fields.get("printer_id")) != str(self.printer_id):
                 continue
-            if not str(candidate.name or "").casefold().endswith(
-                f" - {slot_suffix}".casefold()
+            candidate_name = str(candidate.name or "").casefold()
+            if not any(
+                candidate_name.endswith(f" - {suffix}".casefold())
+                for suffix in slot_suffixes
             ):
                 continue
             managed_candidates.append(candidate)
