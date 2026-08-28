@@ -24,6 +24,19 @@ SPOOL_SYNC_MODULE = importlib.import_module("bambulab.spool_sync")
 Driver = DRIVER_MODULE.Driver
 
 
+async def let_scheduled_work_run(rounds: int = 20) -> None:
+    """Give queued callbacks, and the tasks they create, their turn.
+
+    Work handed to the loop with ``call_soon_threadsafe`` needs one turn to
+    run, and the task it creates needs another. Neither needs wall-clock time,
+    so yielding a fixed number of times settles the queue on any machine. A
+    timeout instead would be a guess about how busy the runner is, which is
+    what made this flaky in CI.
+    """
+    for _ in range(rounds):
+        await asyncio.sleep(0)
+
+
 def make_driver(printer_id=1, **config):
     events = []
     driver = Driver(
@@ -1293,8 +1306,9 @@ class AutoImportDatabaseTests(unittest.IsolatedAsyncioTestCase):
         slot = {k: v for k, v in self.slot.items() if k != "tag_uid"}
 
         self.driver._schedule_shop_image_refresh([slot])
-        await asyncio.wait_for(refreshed.wait(), timeout=5)
+        await let_scheduled_work_run()
 
+        self.assertTrue(refreshed.is_set())
         self.assertEqual(len(captured), 1)
         self.assertEqual(captured[0]["tray_uuid"], slot["tray_uuid"])
 
