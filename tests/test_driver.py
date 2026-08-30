@@ -13,6 +13,7 @@ from app.models.base import Base
 from app.models.location import Location
 from app.models.printer_params import FilamentPrinterParam
 from app.models.spool import Spool, SpoolStatus
+from app.models.system_extra_field import SystemExtraField
 
 
 DRIVER_MODULE = importlib.import_module("bambulab.driver")
@@ -243,7 +244,7 @@ class PluginPageTests(unittest.TestCase):
         plugin_dir = Path(__file__).resolve().parents[1] / "bambulab"
         manifest = json.loads((plugin_dir / "plugin.json").read_text())
 
-        self.assertEqual(manifest["version"], "2.9.0")
+        self.assertEqual(manifest["version"], "2.9.1")
         self.assertEqual(manifest["page_url"], "/plugin-page/bambulab")
         self.assertTrue(manifest["show_in_nav"])
         self.assertFalse(
@@ -881,6 +882,60 @@ class AutoImportDatabaseTests(unittest.IsolatedAsyncioTestCase):
         for module, session_maker in self.original_session_makers.items():
             module.async_session_maker = session_maker
         await self.engine.dispose()
+
+    async def test_shared_article_number_and_rfid_fields_are_visible_without_duplicates(self):
+        async with self.sessions() as db:
+            db.add(
+                SystemExtraField(
+                    target_type="filament",
+                    key="article_number",
+                    label="Bambu Color Code (Article Number)",
+                    field_type="text",
+                    source="filascan_import",
+                    config={"max_length": 5},
+                )
+            )
+            await db.commit()
+
+        await self.driver._ensure_shared_extra_fields()
+
+        async with self.sessions() as db:
+            fields = list(
+                (
+                    await db.execute(
+                        select(SystemExtraField).order_by(
+                            SystemExtraField.target_type,
+                            SystemExtraField.key,
+                        )
+                    )
+                ).scalars()
+            )
+        self.assertEqual(
+            [
+                (field.target_type, field.key, field.source, field.config)
+                for field in fields
+            ],
+            [
+                (
+                    "filament",
+                    "article_number",
+                    "filascan_import",
+                    {"max_length": 5},
+                ),
+                (
+                    "spool",
+                    "bambu_rfid_tag_1",
+                    "bambulab",
+                    {"max_length": 32},
+                ),
+                (
+                    "spool",
+                    "bambu_rfid_tag_2",
+                    "bambulab",
+                    {"max_length": 32},
+                ),
+            ],
+        )
 
     async def test_import_is_idempotent_and_keeps_custom_rfid_free(self):
         await self.driver._auto_import_rfid_spools([self.slot])
@@ -2066,7 +2121,7 @@ class PrinterNameTests(unittest.IsolatedAsyncioTestCase):
             return "X1C"
 
         driver._load_printer_name = load_name
-        driver._ensure_rfid_extra_fields = AsyncMock()
+        driver._ensure_shared_extra_fields = AsyncMock()
         fake_printer = FakeBambuPrinter()
 
         with patch("bambulabs_api.Printer", return_value=fake_printer):

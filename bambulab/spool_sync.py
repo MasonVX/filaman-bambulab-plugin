@@ -23,7 +23,7 @@ from app.models.spool import Spool, SpoolStatus
 from app.models.system_extra_field import SystemExtraField
 from app.services.spool_service import SpoolService
 
-from .catalog import _evict_expired
+from .catalog import ARTICLE_NUMBER_FIELD, _evict_expired
 
 logger = logging.getLogger(__name__)
 
@@ -35,18 +35,34 @@ BAMBU_EXTERNAL_ID_PREFIX = "bambulab:"
 
 class SpoolSyncMixin:
     """Provide RFID matching, database synchronization and location updates."""
-    async def _ensure_rfid_extra_fields(self) -> None:
-        """Create the two spool fields used for the physical Bambu RFID tags."""
+    async def _ensure_shared_extra_fields(self) -> None:
+        """Expose the shared article number and physical Bambu RFID tags."""
         field_defs = (
-            (BAMBU_RFID_TAG_1_FIELD, "Bambu RFID Tag 1"),
-            (BAMBU_RFID_TAG_2_FIELD, "Bambu RFID Tag 2"),
+            (
+                "filament",
+                ARTICLE_NUMBER_FIELD,
+                "Bambu Color Code (Article Number)",
+                {"max_length": 5},
+            ),
+            (
+                "spool",
+                BAMBU_RFID_TAG_1_FIELD,
+                "Bambu RFID Tag 1",
+                {"max_length": 32},
+            ),
+            (
+                "spool",
+                BAMBU_RFID_TAG_2_FIELD,
+                "Bambu RFID Tag 2",
+                {"max_length": 32},
+            ),
         )
         try:
             async with async_session_maker() as db:
-                for key, label in field_defs:
+                for target_type, key, label, config in field_defs:
                     result = await db.execute(
                         select(SystemExtraField).where(
-                            SystemExtraField.target_type == "spool",
+                            SystemExtraField.target_type == target_type,
                             SystemExtraField.key == key,
                         )
                     )
@@ -54,17 +70,17 @@ class SpoolSyncMixin:
                     if field is None:
                         db.add(
                             SystemExtraField(
-                                target_type="spool",
+                                target_type=target_type,
                                 key=key,
                                 label=label,
                                 field_type="text",
                                 source=self.driver_key,
-                                config={"max_length": 32},
+                                config=config,
                             )
                         )
                 await db.commit()
         except Exception as e:
-            logger.error(f"Failed to ensure Bambu RFID extra fields: {e}")
+            logger.error(f"Failed to ensure shared Bambu extra fields: {e}")
 
     async def _find_matching_filament(self, db, slot: dict[str, Any]) -> Filament | None:
         """Find one existing filament; never create catalog data implicitly."""
