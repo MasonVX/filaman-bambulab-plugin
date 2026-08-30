@@ -70,7 +70,7 @@ Bambu RFID trays report two different identifiers:
 
 FilaMan's built-in `rfid_uid` field is never written or overwritten by this plugin and remains available for custom RFID tags. For compatibility with Spoolman imports and external readers that stored the Bambu `tray_uuid` there, automatic import checks a normalized 32-character `rfid_uid` before creating a spool. A match reuses the existing spool and, when its `external_id` is empty, adds the canonical `bambulab:<tray_uuid>` external ID without changing `rfid_uid`.
 
-At driver startup, the plugin ensures that the shared filament field **Bambu Color Code (Article Number)** (`article_number`) and the system spool extra fields **Bambu RFID Tag 1** (`bambu_rfid_tag_1`) and **Bambu RFID Tag 2** (`bambu_rfid_tag_2`) exist. If another integration such as FilaScan already registered `article_number`, its definition and ownership are retained. The first RFID field can receive the MQTT `tag_uid`; the second remains available for another reader or integration.
+At driver startup, the plugin ensures that **Bambu Color Code (Article Number)** (`article_number`) exists for both filaments and spools, together with the system spool extra fields **Bambu RFID Tag 1** (`bambu_rfid_tag_1`) and **Bambu RFID Tag 2** (`bambu_rfid_tag_2`). The filament value remains canonical; an empty spool value is backfilled from its linked filament so FilaMan's spool detail page can display the code. If another integration such as FilaScan already registered either `article_number` definition, its definition and ownership are retained. The first RFID field can receive the MQTT `tag_uid`; the second remains available for another reader or integration.
 
 Automatic import never creates manufacturers, colors, or filaments. A new spool is only created when the plugin finds one safe existing filament match, first by its `bambu_tray_idx` printer parameter and then by Bambu manufacturer, material, subtype, and color. Duplicate FilamentDB records for the same Bambu product are collapsed deterministically, preferring the canonical record carrying a five-digit Bambu product code such as `(11101)`. Matches across genuinely different product codes remain blocked and are logged. Repeated MQTT messages for the same `tray_uuid` do not create duplicate spools.
 
@@ -124,7 +124,8 @@ available.
 
 | Field | Target | Behavior and purpose |
 |---|---|---|
-| `article_number` | Filament | Visible canonical manufacturer product/color code shared with FilaScan. It is checked first for Bambu Store image lookup. A standalone five-digit code derived from a legacy field or filament name fills this field only when it is empty; an existing value is never overwritten. |
+| `article_number` | Filament | Canonical manufacturer product/color code shared with FilaScan. It is checked first for Bambu Store image lookup. A standalone five-digit code derived from a legacy field or filament name fills this field only when it is empty; an existing value is never overwritten. |
+| `article_number` | Spool | Display mirror of the linked filament value so the code is visible on FilaMan's spool detail page. Existing non-empty spool values are retained. |
 | `filament_image_url` | Filament | Canonical product image URL used by the all-spool gallery. |
 | `filament_image_source_url` | Filament | Canonical product-page URL associated with the image. |
 | `filament_image_provider` | Filament | Identifies the metadata provider, currently `bambulab`. |

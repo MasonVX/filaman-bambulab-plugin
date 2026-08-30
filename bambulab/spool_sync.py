@@ -46,6 +46,12 @@ class SpoolSyncMixin:
             ),
             (
                 "spool",
+                ARTICLE_NUMBER_FIELD,
+                "Bambu Color Code (Article Number)",
+                {"max_length": 5},
+            ),
+            (
+                "spool",
                 BAMBU_RFID_TAG_1_FIELD,
                 "Bambu RFID Tag 1",
                 {"max_length": 32},
@@ -78,6 +84,29 @@ class SpoolSyncMixin:
                                 config=config,
                             )
                         )
+
+                result = await db.execute(
+                    select(Spool, Filament.custom_fields)
+                    .join(Filament, Filament.id == Spool.filament_id)
+                    .join(
+                        Manufacturer,
+                        Manufacturer.id == Filament.manufacturer_id,
+                    )
+                    .where(
+                        func.lower(Manufacturer.name).in_(("bambu", "bambu lab"))
+                    )
+                )
+                for spool, filament_fields in result.all():
+                    if not isinstance(filament_fields, dict):
+                        continue
+                    article_number = str(
+                        filament_fields.get(ARTICLE_NUMBER_FIELD) or ""
+                    ).strip()
+                    spool_fields = dict(spool.custom_fields or {})
+                    if article_number and not spool_fields.get(ARTICLE_NUMBER_FIELD):
+                        spool_fields[ARTICLE_NUMBER_FIELD] = article_number
+                        spool.custom_fields = spool_fields
+                        flag_modified(spool, "custom_fields")
                 await db.commit()
         except Exception as e:
             logger.error(f"Failed to ensure shared Bambu extra fields: {e}")
@@ -376,6 +405,12 @@ class SpoolSyncMixin:
                             continue
 
                         custom_fields = {}
+                        article_number = str(
+                            (filament.custom_fields or {}).get(ARTICLE_NUMBER_FIELD)
+                            or ""
+                        ).strip()
+                        if article_number:
+                            custom_fields[ARTICLE_NUMBER_FIELD] = article_number
                         if tag_uid:
                             custom_fields[BAMBU_RFID_TAG_1_FIELD] = tag_uid
                         spool = Spool(
