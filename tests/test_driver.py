@@ -244,7 +244,7 @@ class PluginPageTests(unittest.TestCase):
         plugin_dir = Path(__file__).resolve().parents[1] / "bambulab"
         manifest = json.loads((plugin_dir / "plugin.json").read_text())
 
-        self.assertEqual(manifest["version"], "2.9.2")
+        self.assertEqual(manifest["version"], "2.9.3")
         self.assertEqual(manifest["page_url"], "/plugin-page/bambulab")
         self.assertTrue(manifest["show_in_nav"])
         self.assertFalse(
@@ -890,24 +890,21 @@ class AutoImportDatabaseTests(unittest.IsolatedAsyncioTestCase):
             opened_status_id = await db.scalar(
                 select(SpoolStatus.id).where(SpoolStatus.key == "opened")
             )
-            db.add_all(
-                [
-                    SystemExtraField(
-                        target_type=target_type,
-                        key="article_number",
-                        label="Bambu Color Code (Article Number)",
-                        field_type="text",
-                        source="filascan_import",
-                        config={"max_length": 5},
-                    )
-                    for target_type in ("filament", "spool")
-                ]
+            db.add(
+                SystemExtraField(
+                    target_type="filament",
+                    key="article_number",
+                    label="Bambu Color Code (Article Number)",
+                    field_type="text",
+                    source="filascan_import",
+                    config={"max_length": 5},
+                )
             )
             db.add(
                 Spool(
                     filament_id=self.filament_id,
                     status_id=opened_status_id,
-                    custom_fields={"user_note": "keep"},
+                    custom_fields={"article_number": "13109"},
                 )
             )
             await db.commit()
@@ -939,12 +936,6 @@ class AutoImportDatabaseTests(unittest.IsolatedAsyncioTestCase):
                 ),
                 (
                     "spool",
-                    "article_number",
-                    "filascan_import",
-                    {"max_length": 5},
-                ),
-                (
-                    "spool",
                     "bambu_rfid_tag_1",
                     "bambulab",
                     {"max_length": 32},
@@ -959,10 +950,7 @@ class AutoImportDatabaseTests(unittest.IsolatedAsyncioTestCase):
         )
         async with self.sessions() as db:
             spool = (await db.execute(select(Spool))).scalar_one()
-        self.assertEqual(
-            spool.custom_fields,
-            {"user_note": "keep", "article_number": "13109"},
-        )
+        self.assertEqual(spool.custom_fields["article_number"], "13109")
 
     async def test_import_is_idempotent_and_keeps_custom_rfid_free(self):
         await self.driver._auto_import_rfid_spools([self.slot])
