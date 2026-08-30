@@ -244,7 +244,7 @@ class PluginPageTests(unittest.TestCase):
         plugin_dir = Path(__file__).resolve().parents[1] / "bambulab"
         manifest = json.loads((plugin_dir / "plugin.json").read_text())
 
-        self.assertEqual(manifest["version"], "2.9.3")
+        self.assertEqual(manifest["version"], "2.9.4")
         self.assertEqual(manifest["page_url"], "/plugin-page/bambulab")
         self.assertTrue(manifest["show_in_nav"])
         self.assertFalse(
@@ -270,21 +270,20 @@ class PluginPageTests(unittest.TestCase):
         self.assertIn("else loadInventory(true);", page)
         self.assertIn("loadInventory(true));", page)
 
-    def test_plugin_page_has_back_navigation_and_user_language(self):
+    def test_plugin_page_relies_on_filaman_navigation_and_uses_user_language(self):
         plugin_dir = Path(__file__).resolve().parents[1] / "bambulab"
         page = (plugin_dir / "page.html").read_text()
 
         self.assertNotIn('class="fm-sidebar"', page)
         self.assertNotIn('class="plugin-main"', page)
-        self.assertIn('id="back-button"', page)
-        self.assertIn("window.history.back()", page)
-        self.assertIn("window.location.href = '/';", page)
+        self.assertNotIn('id="back-button"', page)
+        self.assertNotIn("window.history.back()", page)
+        self.assertNotIn("'page.back':", page)
         self.assertIn("/api/v1/me", page)
         self.assertIn("localStorage.getItem('lang')", page)
         self.assertIn("const translations = {", page)
         self.assertIn("en: {", page)
         self.assertIn("de: {", page)
-        self.assertIn("'page.back': 'Zurück zu FilaMan'", page)
         self.assertIn('data-i18n="page.title"', page)
 
 
