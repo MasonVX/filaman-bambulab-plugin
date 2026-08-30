@@ -668,8 +668,11 @@ class CatalogMixin:
             if not self._normalize_hex_identifier(slot.get("tray_uuid"), 32):
                 continue
             identity = self._slot_identity(slot)
-            last_scheduled = self._shop_slot_last_scheduled.get(identity, 0)
-            if now - last_scheduled < SHOP_IMAGE_SCHEDULE_SECONDS:
+            last_scheduled = self._shop_slot_last_scheduled.get(identity)
+            if (
+                last_scheduled is not None
+                and now - last_scheduled < SHOP_IMAGE_SCHEDULE_SECONDS
+            ):
                 continue
             self._shop_slot_last_scheduled[identity] = now
             candidates.append(dict(slot))

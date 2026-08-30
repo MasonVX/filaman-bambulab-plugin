@@ -1354,7 +1354,11 @@ class AutoImportDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.driver._loop = Mock()
         slot = {k: v for k, v in self.slot.items() if k != "tag_uid"}
 
-        self.driver._schedule_shop_image_refresh([slot])
+        # A newly booted CI runner can report a monotonic timestamp below the
+        # throttle interval. An unseen slot must still schedule its first
+        # refresh instead of treating timestamp zero as a previous attempt.
+        with patch.object(CATALOG_MODULE.time, "monotonic", return_value=30):
+            self.driver._schedule_shop_image_refresh([slot])
         self.driver._loop.call_soon_threadsafe.assert_called_once()
 
     async def test_physical_tag_uid_is_not_used_as_spool_identity(self):
