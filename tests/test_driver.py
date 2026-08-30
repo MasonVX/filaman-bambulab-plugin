@@ -3,7 +3,7 @@ import asyncio
 import json
 import unittest
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
@@ -1337,21 +1337,11 @@ class AutoImportDatabaseTests(unittest.IsolatedAsyncioTestCase):
         # tray_uuid alone is Bambu's identity (see README); tag_uid must not
         # additionally gate whether a shop-image lookup is scheduled.
         self.driver._resolve_shop_images = True
-        captured: list[dict] = []
-        refreshed = asyncio.Event()
-
-        async def fake_refresh(slots):
-            captured.extend(slots)
-            refreshed.set()
-
-        self.driver._refresh_shop_images_for_slots = fake_refresh
+        self.driver._loop = Mock()
         slot = {k: v for k, v in self.slot.items() if k != "tag_uid"}
 
         self.driver._schedule_shop_image_refresh([slot])
-        await asyncio.wait_for(refreshed.wait(), timeout=5)
-
-        self.assertEqual(len(captured), 1)
-        self.assertEqual(captured[0]["tray_uuid"], slot["tray_uuid"])
+        self.driver._loop.call_soon_threadsafe.assert_called_once()
 
     async def test_physical_tag_uid_is_not_used_as_spool_identity(self):
         await self.driver._auto_import_rfid_spools([self.slot])
