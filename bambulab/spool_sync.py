@@ -473,25 +473,37 @@ class SpoolSyncMixin:
 
 
     def _generate_slot_location_name(self, ams_id: int, tray_id: int) -> str:
-        """Generiert Location-Namen für AMS-Slot.
+        """The location name for one bay, spelled the way FilaMan spells it.
 
-        Format:
-        - AMS Slots: "{Drucker Name} - AMS {A-D}{tray_id+1}"
-        - External Slots: "{Drucker Name} - ext. Slot {tray_id+1}"
+        FilaMan's AMS View labels the very same bays through ``slot_label()`` in
+        its display service, and a user reading both should not have to
+        translate between them. So: ``A1``-``A4`` per AMS, ``HT1`` for an AMS HT,
+        ``Ext1`` for the external holder.
 
-        Beispiele:
-        - "Bambu P1S - AMS A2" (ams_id=0, tray_id=1)
-        - "Bambu X1C - ext. Slot 1" (ams_id=255, tray_id=0)
+        Examples:
+        - "Bambu P1S - AMS A2"  (ams_id=0, tray_id=1)
+        - "Bambu X1C - AMS HT1" (ams_id=128, tray_id=0)
+        - "Bambu X1C - Ext1"    (ams_id=255, tray_id=254)
         """
         printer_name = self._printer_name or f"Printer {self.printer_id}"
 
         if ams_id >= 200:  # Virtual/external slots use tray ids 254 and 255
-            external_slot = tray_id - 253 if tray_id >= 254 else tray_id + 1
-            return f"{printer_name} - ext. Slot {external_slot}"
+            return f"{printer_name} - Ext{self._external_bay(tray_id)}"
         elif ams_id >= 128:  # AMS HT units are numbered from protocol id 128
-            return f"{printer_name} - AMS HT {ams_id - 127} - Slot {tray_id + 1}"
+            return f"{printer_name} - AMS HT{ams_id - 127}"
         else:
             return f"{printer_name} - AMS {self._slot_label(ams_id, tray_id)}"
+
+    @staticmethod
+    def _external_bay(tray_id: int) -> int:
+        """Bay number of an external holder, counted the way FilaMan counts it.
+
+        Bambu reports the external trays as 254 and 255 on older printers and as
+        0 and 1 in ``vir_slot`` on newer ones. FilaMan normalises both to 0 and 1
+        before labelling them Ext1 and Ext2, so the same arithmetic has to happen
+        here or the two would disagree about which holder is which.
+        """
+        return tray_id - 253 if tray_id >= 254 else tray_id + 1
 
     @staticmethod
     def _slot_label(ams_id: int, tray_id: int) -> str:
@@ -551,24 +563,42 @@ class SpoolSyncMixin:
         )
         location.custom_fields = custom_fields
 
+    def _bay_suffixes_this_plugin_wrote(self, ams_id: int, tray_id: int) -> set[str]:
+        """Every suffix this plugin gave one bay, across its versions.
+
+        The older spellings are kept so a row can still be recognised as one
+        this plugin wrote. Drop one and that bay gets a second location instead
+        of a corrected name.
+        """
+        if ams_id >= 200:
+            bay = self._external_bay(tray_id)
+            return {f"Ext{bay}", f"ext. Slot {bay}"}
+        if ams_id >= 128:
+            unit = ams_id - 127
+            return {f"AMS HT{unit}", f"AMS HT {unit} - Slot {tray_id + 1}"}
+        return {
+            f"AMS {self._slot_label(ams_id, tray_id)}",
+            f"AMS {self._swapped_slot_label(ams_id, tray_id)}",
+        }
+
     def _names_this_plugin_wrote(self, ams_id: int, tray_id: int) -> set[str]:
-        """Every name this plugin gave one AMS bay, across its versions."""
+        """Every name this plugin gave one bay, across its versions."""
         fallback_printer = f"Printer {self.printer_id}"
         printers = {self._printer_name or fallback_printer, fallback_printer}
-        labels = {
-            self._slot_label(ams_id, tray_id),
-            self._swapped_slot_label(ams_id, tray_id),
-        }
         return {
-            f"{printer} - AMS {label}" for printer in printers for label in labels
+            f"{printer} - {suffix}"
+            for printer in printers
+            for suffix in self._bay_suffixes_this_plugin_wrote(ams_id, tray_id)
         }
 
-    async def rename_swapped_slot_locations(self) -> None:
-        """Relabel the AMS bays this plugin named with unit and bay swapped.
+    async def relabel_slot_locations(self) -> None:
+        """Bring the bay labels this plugin wrote up to the current spelling.
 
-        Earlier versions built "AMS B1" out of bay 2 of the first unit, where
-        Bambu itself says A2. Sorting those by name walks back and forth
-        between the units, which is what gave it away.
+        Two things are put right. Earlier versions built "AMS B1" out of bay 2
+        of the first unit, where Bambu itself says A2 - sorting those by name
+        walks back and forth between the units, which is what gave it away. And
+        an AMS HT or the external holder was spelled unlike everywhere else in
+        FilaMan, "AMS HT 1 - Slot 1" against the AMS View's "HT1".
 
         Run once at startup and only over rows this plugin owns, identified by
         their stable identifier. A name somebody chose by hand is left alone,
@@ -589,8 +619,6 @@ class SpoolSyncMixin:
                         ams_id, tray_id = int(parts[0]), int(parts[1])
                     except ValueError:
                         continue
-                    if ams_id >= 128:  # HT and external labels were never swapped
-                        continue
                     wanted = self._generate_slot_location_name(ams_id, tray_id)
                     if location.name == wanted:
                         continue
@@ -608,12 +636,12 @@ class SpoolSyncMixin:
                 if renamed:
                     await db.commit()
                     logger.info(
-                        "Relabelled %s AMS location(s) for printer %s",
+                        "Relabelled %s slot location(s) for printer %s",
                         renamed,
                         self.printer_id,
                     )
         except Exception as e:
-            logger.error(f"Failed to relabel AMS locations: {e}", exc_info=True)
+            logger.error(f"Failed to relabel slot locations: {e}", exc_info=True)
 
     async def _find_slot_location(
         self, db, ams_id: int, tray_id: int
@@ -638,12 +666,11 @@ class SpoolSyncMixin:
         )
         candidates = list(result.scalars().all())
         legacy_name = self._generate_legacy_slot_location_name(ams_id, tray_id)
-        # Both spellings: a row from before this plugin fixed the label order
-        # ends in the swapped one, and refusing it would create a second
-        # location for a slot that already has one.
-        slot_suffixes = {legacy_name.split(" - ", 1)[-1]}
-        if ams_id < 128:
-            slot_suffixes.add(f"AMS {self._swapped_slot_label(ams_id, tray_id)}")
+        # Every spelling this plugin ever used, from the one place that knows
+        # them. A row from before the label order was fixed ends in the swapped
+        # one, and refusing it would create a second location for a bay that
+        # already has one.
+        slot_suffixes = self._bay_suffixes_this_plugin_wrote(ams_id, tray_id)
         managed_candidates = []
         for candidate in candidates:
             custom_fields = candidate.custom_fields or {}

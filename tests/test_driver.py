@@ -704,16 +704,35 @@ class SlotProcessingTests(unittest.TestCase):
             driver._generate_slot_location_name(1, 0), "Bambu P1S - AMS B1"
         )
 
-    def test_external_location_has_human_slot_number(self):
+    def test_bays_are_labelled_the_way_filaman_labels_them(self):
+        """The AMS View calls these bays A1, HT1 and Ext1; so do the locations."""
         driver, _ = make_driver()
         driver._printer_name = "Test Printer"
         self.assertEqual(
-            driver._generate_slot_location_name(255, 254),
-            "Test Printer - ext. Slot 1",
+            driver._generate_slot_location_name(0, 0), "Test Printer - AMS A1"
         )
         self.assertEqual(
-            driver._generate_slot_location_name(255, 255),
-            "Test Printer - ext. Slot 2",
+            driver._generate_slot_location_name(1, 3), "Test Printer - AMS B4"
+        )
+        self.assertEqual(
+            driver._generate_slot_location_name(128, 0), "Test Printer - AMS HT1"
+        )
+        self.assertEqual(
+            driver._generate_slot_location_name(255, 254), "Test Printer - Ext1"
+        )
+        self.assertEqual(
+            driver._generate_slot_location_name(255, 255), "Test Printer - Ext2"
+        )
+
+    def test_external_bay_numbering_matches_both_report_shapes(self):
+        """Old printers report trays 254/255, newer ones 0/1 in vir_slot."""
+        driver, _ = make_driver()
+        driver._printer_name = "Test Printer"
+        self.assertEqual(
+            driver._generate_slot_location_name(255, 0), "Test Printer - Ext1"
+        )
+        self.assertEqual(
+            driver._generate_slot_location_name(255, 1), "Test Printer - Ext2"
         )
 
     def test_processes_new_vir_slot_list_and_ams_ht_ids(self):
@@ -1173,7 +1192,7 @@ class AutoImportDatabaseTests(unittest.IsolatedAsyncioTestCase):
             "bambulab_1_1_0", "Test Printer - AMS A2"
         )
 
-        await self.driver.rename_swapped_slot_locations()
+        await self.driver.relabel_slot_locations()
 
         async with self.sessions() as db:
             self.assertEqual(
@@ -1188,7 +1207,7 @@ class AutoImportDatabaseTests(unittest.IsolatedAsyncioTestCase):
             "bambulab_1_0_1", "Printer 1 - AMS B1"
         )
 
-        await self.driver.rename_swapped_slot_locations()
+        await self.driver.relabel_slot_locations()
 
         async with self.sessions() as db:
             self.assertEqual(
@@ -1198,12 +1217,13 @@ class AutoImportDatabaseTests(unittest.IsolatedAsyncioTestCase):
     async def test_leaves_a_name_somebody_chose_by_hand(self):
         location_id = await self._slot_location("bambulab_1_0_1", "Trockenbox")
 
-        await self.driver.rename_swapped_slot_locations()
+        await self.driver.relabel_slot_locations()
 
         async with self.sessions() as db:
             self.assertEqual((await db.get(Location, location_id)).name, "Trockenbox")
 
-    async def test_leaves_ht_and_external_bays_alone(self):
+    async def test_relabels_ht_and_external_bays_too(self):
+        """Their old spellings differed from the AMS View; now they do not."""
         ht = await self._slot_location(
             "bambulab_1_128_0", "Test Printer - AMS HT 1 - Slot 1"
         )
@@ -1211,15 +1231,36 @@ class AutoImportDatabaseTests(unittest.IsolatedAsyncioTestCase):
             "bambulab_1_255_254", "Test Printer - ext. Slot 1"
         )
 
-        await self.driver.rename_swapped_slot_locations()
+        await self.driver.relabel_slot_locations()
 
         async with self.sessions() as db:
             self.assertEqual(
-                (await db.get(Location, ht)).name, "Test Printer - AMS HT 1 - Slot 1"
+                (await db.get(Location, ht)).name, "Test Printer - AMS HT1"
             )
             self.assertEqual(
-                (await db.get(Location, external)).name, "Test Printer - ext. Slot 1"
+                (await db.get(Location, external)).name, "Test Printer - Ext1"
             )
+
+    async def test_a_second_run_changes_nothing(self):
+        """It runs on every start, so it has to be quiet once it is done."""
+        bay = await self._slot_location("bambulab_1_0_1", "Test Printer - AMS B1")
+
+        await self.driver.relabel_slot_locations()
+        async with self.sessions() as db:
+            self.assertEqual((await db.get(Location, bay)).name, "Test Printer - AMS A2")
+
+        await self.driver.relabel_slot_locations()
+        async with self.sessions() as db:
+            self.assertEqual((await db.get(Location, bay)).name, "Test Printer - AMS A2")
+
+    async def test_leaves_a_hand_picked_ht_name_alone(self):
+        """Only names this plugin wrote are corrected, whatever the bay."""
+        ht = await self._slot_location("bambulab_1_128_0", "Trockenbox rechts")
+
+        await self.driver.relabel_slot_locations()
+
+        async with self.sessions() as db:
+            self.assertEqual((await db.get(Location, ht)).name, "Trockenbox rechts")
 
     async def test_assigning_a_tray_clears_the_spool_that_was_there(self):
         """A tray holds one spool, so the previous one has to let go."""
@@ -2210,7 +2251,7 @@ class PrinterNameTests(unittest.IsolatedAsyncioTestCase):
             driver._generate_slot_location_name(0, 0), "X1C - AMS A1"
         )
         self.assertEqual(
-            driver._generate_slot_location_name(255, 254), "X1C - ext. Slot 1"
+            driver._generate_slot_location_name(255, 254), "X1C - Ext1"
         )
 
     async def test_loads_printer_name_before_mqtt_can_deliver_slots(self):
