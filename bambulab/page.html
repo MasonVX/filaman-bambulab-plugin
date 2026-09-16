@@ -169,6 +169,16 @@
     .badge { display: inline-flex; align-items: center; min-height: 25px; padding: 3px 9px; border: 1px solid var(--border); border-radius: 999px; color: var(--muted); background: var(--surface-muted); font-size: 11px; font-weight: 750; }
     .badge.green { border-color: transparent; color: var(--accent-strong); background: var(--accent-soft); }
     .badge.warn { color: var(--warning); }
+    /* Sits between the head's bottom border and the slot grid, so it needs the
+       head's horizontal inset to line up with the printer name, and air above
+       it so it does not hang off the rule. The gap below comes from .slots. */
+    .climate { display: flex; flex-wrap: wrap; gap: 7px; padding: 15px 21px 0; }
+    .climate .badge { font-weight: 600; letter-spacing: 0.01em; }
+    .climate .badge b { margin-right: 8px; color: var(--text); font-weight: 750; }
+    .climate-item { display: inline-flex; align-items: center; gap: 4px; }
+    .climate-item + .climate-item { margin-left: 10px; }
+    /* Sized off the text, so the icons keep step when the page is scaled. */
+    .climate-item img { width: 1.15em; height: 1.15em; opacity: 0.6; flex-shrink: 0; }
 
     .slots { display: grid; grid-template-columns: repeat(auto-fill, minmax(245px, 1fr)); gap: 14px; padding: 18px; }
     .slot {
@@ -252,6 +262,7 @@
       .metric { min-height: 87px; padding: 14px; }
       .metric-value { font-size: 24px; }
       .printer-head { align-items: flex-start; padding: 16px; }
+      .climate { padding: 12px 16px 0; }
       .badges { max-width: 45%; }
       .slots { grid-template-columns: 1fr; padding: 11px; }
       .inventory-toolbar { grid-template-columns: 1fr; padding: 11px; }
@@ -313,6 +324,7 @@
           'ams.mqttControl': 'MQTT control', 'ams.autoImport': 'Auto import', 'ams.autoImportOff': 'Auto import off',
           'ams.imagesOn': 'Catalog images on', 'ams.imagesOff': 'Catalog images off', 'ams.connected': 'connected', 'ams.offline': 'offline',
           'ams.noSlotData': 'No AMS slot data received yet.',
+          'ams.humidityLevel': 'Level {n}', 'ams.amsUnit': 'AMS {n}', 'ams.amsHtUnit': 'AMS HT {n}',
           'inventory.unknownManufacturer': 'Unknown manufacturer', 'inventory.spoolNumber': 'Spool #{id}', 'inventory.noColor': 'No color name',
           'inventory.total': 'Total spools', 'inventory.withArchived': 'including archived', 'inventory.active': 'active spools',
           'inventory.currentPage': 'Current page', 'inventory.pageOf': 'Page {page} of {pages}', 'inventory.onPage': 'on this page',
@@ -349,6 +361,7 @@
           'ams.mqttControl': 'MQTT-Steuerung', 'ams.autoImport': 'Auto-Import', 'ams.autoImportOff': 'Auto-Import aus',
           'ams.imagesOn': 'Katalogbilder an', 'ams.imagesOff': 'Katalogbilder aus', 'ams.connected': 'verbunden', 'ams.offline': 'offline',
           'ams.noSlotData': 'Noch keine AMS-Slotdaten empfangen.',
+          'ams.humidityLevel': 'Stufe {n}', 'ams.amsUnit': 'AMS {n}', 'ams.amsHtUnit': 'AMS HT {n}',
           'inventory.unknownManufacturer': 'Unbekannter Hersteller', 'inventory.spoolNumber': 'Spule #{id}', 'inventory.noColor': 'Keine Farbbezeichnung',
           'inventory.total': 'Spulen gesamt', 'inventory.withArchived': 'inklusive archivierter', 'inventory.active': 'aktive Spulen',
           'inventory.currentPage': 'Aktuelle Seite', 'inventory.pageOf': 'Seite {page} von {pages}', 'inventory.onPage': 'auf dieser Seite',
@@ -556,10 +569,51 @@
                 <div class="printer-title"><i class="status-dot ${health.connected ? 'online' : ''}"></i><div><h2>${escapeHtml(printer.name)}</h2><small>${escapeHtml(health.printer_model || 'Bambu Lab')} · ${escapeHtml(health.ams_type || 'AMS')} · ${escapeHtml(t(health.connected ? 'ams.connected' : 'ams.offline'))}</small></div></div>
                 <div class="badges">${badges}</div>
               </header>
+              ${renderClimate(health)}
               <div class="slots">${slots.length ? slots.map((slot) => renderSlot(slot, spools.get(Number(slot.spool_id)))).join('') : `<div class="notice">${escapeHtml(t('ams.noSlotData'))}</div>`}</div>
             </section>`;
         }).join('');
         bindImageFallbacks();
+      };
+
+      const amsUnitLabel = (unit, amsType) => {
+        const id = Number(unit.ams_id);
+        if (amsType === 'AMS Lite') return 'AMS Lite';
+        if (id >= 128) return t('ams.amsHtUnit', { n: id - 127 });
+        return t('ams.amsUnit', { n: id + 1 });
+      };
+
+      // Humidity arrives either as a percentage or as Bambu's 1-5 index,
+      // depending on the unit. Printing "3%" for an index would be a lie, so
+      // the small numbers are shown as what they are.
+      const amsHumidity = (unit) => {
+        const value = finiteNumber(unit.humidity);
+        if (value === null) return null;
+        return value >= 1 && value <= 5 ? t('ams.humidityLevel', { n: value }) : `${value}%`;
+      };
+
+      // The same icons FilaMan puts next to these numbers on its Printers page
+      // and in the AMS View, so all three screens read one language. Decorative
+      // only: the value stays as text and alt="" keeps them out of the
+      // accessibility tree.
+      const withIcon = (icon, text) =>
+        `<span class="climate-item"><img src="/${icon}.svg" alt="">${escapeHtml(text)}</span>`;
+
+      const renderClimate = (health) => {
+        const units = (health.ams_units || []).filter((unit) => unit && (
+          finiteNumber(unit.temp) !== null || finiteNumber(unit.humidity) !== null
+        ));
+        if (!units.length) return '';
+        const chips = units.map((unit) => {
+          const humidity = amsHumidity(unit);
+          const temp = finiteNumber(unit.temp);
+          const parts = [
+            humidity ? withIcon('moisture', humidity) : '',
+            temp !== null ? withIcon('temperature', `${temp}\u00b0C`) : '',
+          ].filter(Boolean).join('');
+          return `<span class="badge"><b>${escapeHtml(amsUnitLabel(unit, health.ams_type))}</b>${parts}</span>`;
+        }).join('');
+        return `<div class="climate">${chips}</div>`;
       };
 
       const inventoryPercent = (spool) => {
