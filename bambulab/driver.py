@@ -122,6 +122,7 @@ class Driver(
         )
 
         await self._ensure_shared_extra_fields()
+        await self.relabel_slot_locations()
         if self._resolve_shop_images:
             await self._register_inventory_enrichment()
 
